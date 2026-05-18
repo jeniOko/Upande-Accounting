@@ -17,7 +17,7 @@ frappe.query_reports["Advance Payment Register"] = {
             fieldname: "from_date",
             label: __("From Date"),
             fieldtype: "Date",
-            default: frappe.datetime.add_months(frappe.datetime.get_today(), -3),
+            default: frappe.datetime.add_months(frappe.datetime.get_today(), -1),
             reqd: 1,
         },
         {
@@ -32,8 +32,6 @@ frappe.query_reports["Advance Payment Register"] = {
             label: __("Party Type"),
             fieldtype: "Select",
             options: "\nCustomer\nSupplier",
-            // When party type changes, reset the party field and update its
-            // doctype so only matching records are shown.
             on_change: function () {
                 const partyType = frappe.query_report.get_filter_value("party_type");
                 frappe.query_report.set_filter_value("party", "");
@@ -45,7 +43,7 @@ frappe.query_reports["Advance Payment Register"] = {
             fieldname: "party",
             label: __("Party"),
             fieldtype: "Link",
-            options: "Customer",   // updated dynamically by party_type on_change
+            options: "Customer",
             get_query: function () {
                 const partyType =
                     frappe.query_report.get_filter_value("party_type") || "Customer";
@@ -88,9 +86,9 @@ frappe.query_reports["Advance Payment Register"] = {
 
         if (column.fieldname === "advance_type") {
             const colours = {
-                "Order-Based Advance":    "#1a6ebd",   // blue
-                "Unallocated Advance":    "#c0392b",   // red
-                "Partially Used Advance": "#e67e22",   // orange
+                "Order-Based Advance":    "#1a6ebd",
+                "Unallocated Advance":    "#c0392b",
+                "Partially Used Advance": "#e67e22",
             };
             const colour = colours[data.advance_type];
             if (colour) {
@@ -98,7 +96,6 @@ frappe.query_reports["Advance Payment Register"] = {
             }
         }
 
-        // Highlight unallocated balance > 0 in amber
         if (column.fieldname === "unallocated_amount" && flt(data.unallocated_amount) > 0) {
             value = `<span style="color:darkorange;">${value}</span>`;
         }
@@ -107,11 +104,53 @@ frappe.query_reports["Advance Payment Register"] = {
     },
 
     // ------------------------------------------------------------------
-    // Quick summary row at the bottom
+    // Checkbox column
     // ------------------------------------------------------------------
     get_datatable_options(options) {
         return Object.assign(options, {
             checkboxColumn: true,
+        });
+    },
+
+    // ------------------------------------------------------------------
+    // Row highlight on checkbox selection
+    // ------------------------------------------------------------------
+    after_datatable_render: function (datatable) {
+        const HIGHLIGHT_BG     = "#fff9c4";
+        const HIGHLIGHT_BORDER = "2px solid #f5a623";
+
+        const wrapper = (datatable.wrapper)
+            || (datatable.$el && datatable.$el[0])
+            || (datatable.bodyScrollable && datatable.bodyScrollable.closest(".datatable"));
+
+        if (!wrapper) return;
+
+        if (wrapper.__highlightListenerAttached) return;
+        wrapper.__highlightListenerAttached = true;
+
+        wrapper.addEventListener("click", function (e) {
+            const checkbox = e.target.closest("input[type='checkbox']");
+            if (!checkbox) return;
+
+            const tr = checkbox.closest("tr");
+            if (!tr) return;
+
+            if (tr.closest("thead")) return;
+
+            const isChecked = checkbox.checked;
+
+            tr.querySelectorAll("td").forEach(td => {
+                if (isChecked) {
+                    td.style.backgroundColor = HIGHLIGHT_BG;
+                    td.style.borderTop       = HIGHLIGHT_BORDER;
+                    td.style.borderBottom    = HIGHLIGHT_BORDER;
+                    td.style.transition      = "background-color 0.15s ease";
+                } else {
+                    td.style.backgroundColor = "";
+                    td.style.borderTop       = "";
+                    td.style.borderBottom    = "";
+                }
+            });
         });
     },
 };

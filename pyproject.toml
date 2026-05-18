@@ -4,7 +4,7 @@ authors = [
     { name = "jeniffer@upande.com", email = "okothjeniffer10@gmail.com"}
 ]
 description = "Upande erpnext customization for the accounting module"
-requires-python = ">=3.14"
+requires-python = ">=3.10"
 readme = "README.md"
 dynamic = ["version"]
 dependencies = [

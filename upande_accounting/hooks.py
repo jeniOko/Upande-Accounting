@@ -20,6 +20,18 @@ app_license = "mit"
 # 		"has_permission": "upande_accounting.api.permission.has_app_permission"
 # 	}
 # ]
+fixtures = [
+           {
+               "dt": "Custom Field",
+               "filters": [
+                   ["dt", "in", ["Account"]],
+                   ["fieldname", "in", [
+                       "is_tax_report_account",
+                       "tax_report_type",
+                   ]],
+               ],
+           },
+       ]
 
 # Includes in <head>
 # ------------------

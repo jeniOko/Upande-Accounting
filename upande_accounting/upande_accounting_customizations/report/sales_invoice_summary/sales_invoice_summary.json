@@ -16,7 +16,7 @@
  "module": "Upande Accounting Customizations",
  "name": "Sales Invoice Summary",
  "owner": "Administrator",
- "prepared_report": 0,
+ "prepared_report": 1,
  "ref_doctype": "Sales Invoice",
  "report_name": "Sales Invoice Summary",
  "report_type": "Script Report",

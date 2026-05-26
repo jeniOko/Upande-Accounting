@@ -16,7 +16,7 @@
  "module": "Upande Accounting Customizations",
  "name": "Purchase Invoice Summary",
  "owner": "Administrator",
- "prepared_report": 0,
+ "prepared_report": 1,
  "ref_doctype": "Purchase Invoice",
  "report_name": "Purchase Invoice Summary",
  "report_type": "Script Report",

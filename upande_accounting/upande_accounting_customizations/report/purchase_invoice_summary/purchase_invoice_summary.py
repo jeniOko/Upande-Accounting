@@ -203,7 +203,7 @@ def get_columns(selected_tax_keys, tax_accounts, net_only=False):
     if not net_only:
         # One column per discovered tax account head
         for key in selected_tax_keys:
-            label = "Tax — " + tax_accounts[key]["label"]
+            label = "Tax: " + tax_accounts[key]["label"]
             cols.append({
                 "label":     _(label),
                 "fieldname": _safe_fieldname(key),

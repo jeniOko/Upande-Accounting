@@ -16,7 +16,7 @@
  "module": "Upande Accounting Customizations",
  "name": "Customer Statement Of Account",
  "owner": "Administrator",
- "prepared_report": 0,
+ "prepared_report": 1,
  "ref_doctype": "Sales Invoice",
  "report_name": "Customer Statement Of Account",
  "report_type": "Script Report",

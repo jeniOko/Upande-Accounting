@@ -207,9 +207,9 @@ def get_columns(selected_keys, all_accounts, net_only=False):
         info = all_accounts[key]
         label = info["label"]
         if info["account_type"] == "Tax":
-            label = "Tax — " + label
+            label = "Tax: " + label
         else:
-            label = "Charge — " + label
+            label = "Charge: " + label
 
         cols.append({
             "label":     _(label),

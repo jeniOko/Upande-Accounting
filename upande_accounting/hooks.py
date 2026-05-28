@@ -32,7 +32,12 @@ fixtures = [
                ],
            },
        ]
-
+doc_events = {
+    "Purchase Invoice": {
+        "on_submit": "upande_accounting...withholding_tax_register.create_unpaid_wtp_on_submit",
+        "on_cancel": "upande_accounting...withholding_tax_register.cancel_wtp_on_invoice_cancel",
+    }
+}
 # Includes in <head>
 # ------------------
 

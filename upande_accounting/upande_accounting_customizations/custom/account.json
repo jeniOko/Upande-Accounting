@@ -109,7 +109,7 @@
    "name": "Account-custom_tax_report_type",
    "no_copy": 0,
    "non_negative": 0,
-   "options": "\nVAT3",
+   "options": "\nVAT3\nWHTAX\nWHVAT",
    "owner": "Administrator",
    "permlevel": 0,
    "placeholder": null,

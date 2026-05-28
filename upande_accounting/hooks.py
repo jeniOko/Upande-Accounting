@@ -34,8 +34,12 @@ fixtures = [
        ]
 doc_events = {
     "Purchase Invoice": {
-        "on_submit": "upande_accounting...withholding_tax_register.create_unpaid_wtp_on_submit",
-        "on_cancel": "upande_accounting...withholding_tax_register.cancel_wtp_on_invoice_cancel",
+        "before_save": "upande_accounting.utils.sync_tds_from_item_tax_template",
+        "on_submit": "upande_accounting.withholding_tax_register.create_unpaid_wtp_on_submit",
+        "on_cancel": "upande_accounting.withholding_tax_register.cancel_wtp_on_invoice_cancel",
+    },
+    "Purchase Order": {
+        "before_save": "upande_accounting.utils.sync_tds_from_item_tax_template"
     }
 }
 # Includes in <head>

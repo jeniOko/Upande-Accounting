@@ -2,7 +2,7 @@
 // For license information, please see license.txt
 
 
-frappe.query_reports["Advance Payment Register"] = {
+frappe.query_reports["Payment Register"] = {
 
     filters: [
         {
@@ -28,6 +28,12 @@ frappe.query_reports["Advance Payment Register"] = {
             reqd: 1,
         },
         {
+            fieldname: "payment_type",
+            label: __("Payment Type"),
+            fieldtype: "Select",
+            options: "\nReceive\nPay",
+        },
+        {
             fieldname: "party_type",
             label: __("Party Type"),
             fieldtype: "Select",
@@ -51,60 +57,40 @@ frappe.query_reports["Advance Payment Register"] = {
             },
         },
         {
-            fieldname: "payment_status",
-            label: __("Payment Status"),
-            fieldtype: "Select",
-            options: "\nFully Allocated\nPartially Allocated\nUnallocated",
-        },
-        {
-            fieldname: "advance_type",
-            label: __("Advance Type"),
-            fieldtype: "Select",
-            options: "\nOrder-Based Advance\nUnallocated Advance\nPartially Used Advance",
+            fieldname: "mode_of_payment",
+            label: __("Mode of Payment"),
+            fieldtype: "Link",
+            options: "Mode of Payment",
         },
     ],
 
     // ------------------------------------------------------------------
-    // Conditional row formatting
+    // Row formatting
     // ------------------------------------------------------------------
     formatter: function (value, row, column, data, default_formatter) {
         value = default_formatter(value, row, column, data);
 
         if (!data) return value;
 
-        if (column.fieldname === "payment_status") {
-            const colours = {
-                "Fully Allocated":     "green",
-                "Partially Allocated": "orange",
-                "Unallocated":         "red",
-            };
-            const colour = colours[data.payment_status];
-            if (colour) {
-                value = `<span style="color:${colour}; font-weight:600;">${data.payment_status}</span>`;
+        // Colour-code payment direction
+        if (column.fieldname === "payment_type") {
+            if (data.payment_type === "Receive") {
+                value = `<span style="color:green; font-weight:600;">Receive</span>`;
+            } else if (data.payment_type === "Pay") {
+                value = `<span style="color:#c0392b; font-weight:600;">Pay</span>`;
             }
         }
 
-        if (column.fieldname === "advance_type") {
-            const colours = {
-                "Order-Based Advance":    "#1a6ebd",
-                "Unallocated Advance":    "#c0392b",
-                "Partially Used Advance": "#e67e22",
-            };
-            const colour = colours[data.advance_type];
-            if (colour) {
-                value = `<span style="color:${colour}; font-weight:600;">${data.advance_type}</span>`;
-            }
-        }
-
+        // Highlight rows that still carry an unallocated balance
         if (column.fieldname === "unallocated_amount" && flt(data.unallocated_amount) > 0) {
-            value = `<span style="color:darkorange;">${value}</span>`;
+            value = `<span style="color:darkorange; font-weight:600;">${value}</span>`;
         }
 
         return value;
     },
 
     // ------------------------------------------------------------------
-    // Checkbox column
+    // Checkbox column — keep it enabled
     // ------------------------------------------------------------------
     get_datatable_options(options) {
         return Object.assign(options, {
@@ -112,13 +98,12 @@ frappe.query_reports["Advance Payment Register"] = {
         });
     },
 
-    // ------------------------------------------------------------------
-    // Row highlight on checkbox selection
-    // ------------------------------------------------------------------
+    
     after_datatable_render: function (datatable) {
-        const HIGHLIGHT_BG     = "#fff9c4";
-        const HIGHLIGHT_BORDER = "2px solid #f5a623";
+        const HIGHLIGHT_BG     = "#f5e879ff";           // soft yellow
+        const HIGHLIGHT_BORDER = "2px solid #f5a623"; // amber border
 
+       
         const wrapper = (datatable.wrapper)
             || (datatable.$el && datatable.$el[0])
             || (datatable.bodyScrollable && datatable.bodyScrollable.closest(".datatable"));
@@ -132,9 +117,11 @@ frappe.query_reports["Advance Payment Register"] = {
             const checkbox = e.target.closest("input[type='checkbox']");
             if (!checkbox) return;
 
+            // Walk up to the <tr> that owns this checkbox
             const tr = checkbox.closest("tr");
             if (!tr) return;
 
+            // Skip the header / select-all row
             if (tr.closest("thead")) return;
 
             const isChecked = checkbox.checked;

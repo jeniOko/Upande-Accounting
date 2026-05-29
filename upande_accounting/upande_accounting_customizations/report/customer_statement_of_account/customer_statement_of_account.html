@@ -1,0 +1,444 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8"/>
+<meta name="viewport" content="width=device-width, initial-scale=1.0"/>
+<title>Customer Statement of Account</title>
+<style>
+
+  /* ── Reset ─────────────────────────────────────────────────── */
+  *, *::before, *::after { box-sizing: border-box; margin: 0; padding: 0; }
+
+  body {
+    font-family: 'Helvetica Neue', Helvetica, Arial, sans-serif;
+    font-size: 11px;
+    color: #111;
+    background: #fff;
+    padding: 0 36px 32px 36px;
+  }
+
+  /* ── Letterhead zone ───────────────────────────────────────── */
+  /*
+   * Leave this block empty — ERPNext injects the selected Letter Head
+   * (company logo + address HTML) into .letterhead-zone automatically
+   * when "With Letterhead" is selected at print time.
+   * When printing WITHOUT a letterhead the company-header below is shown.
+   */
+  .letterhead-zone {
+    min-height: 80px;   /* breathing room for a standard letterhead */
+    margin-bottom: 8px;
+  }
+
+  /* ── Company header (shown when no letterhead is used) ──────── */
+  .company-header {
+    padding: 20px 0 14px 0;
+    border-bottom: 2px solid #111;
+    margin-bottom: 16px;
+  }
+
+  .company-header .company-name {
+    font-size: 16px;
+    font-weight: 700;
+    letter-spacing: 0.4px;
+  }
+
+  .company-header .company-sub {
+    font-size: 10px;
+    color: #555;
+    margin-top: 3px;
+    line-height: 1.6;
+  }
+
+  /* ── Statement title bar ───────────────────────────────────── */
+  .title-bar {
+    display: flex;
+    justify-content: space-between;
+    align-items: flex-end;
+    border-bottom: 1px solid #ccc;
+    padding-bottom: 10px;
+    margin-bottom: 16px;
+  }
+
+  .title-bar .doc-title {
+    font-size: 15px;
+    font-weight: 700;
+    text-transform: uppercase;
+    letter-spacing: 1.2px;
+    color: #111;
+  }
+
+  .title-bar .period-label {
+    font-size: 10px;
+    color: #666;
+    text-align: right;
+    line-height: 1.7;
+  }
+
+  /* ── Customer block ─────────────────────────────────────────── */
+  .customer-section {
+    display: flex;
+    justify-content: space-between;
+    align-items: flex-start;
+    margin-bottom: 18px;
+    gap: 20px;
+  }
+
+  .customer-block {
+    border-left: 3px solid #111;
+    padding: 8px 12px;
+    flex: 1;
+  }
+
+  .customer-block .label {
+    font-size: 8.5px;
+    text-transform: uppercase;
+    letter-spacing: 1px;
+    color: #888;
+    margin-bottom: 3px;
+  }
+
+  .customer-block .cust-name {
+    font-size: 13px;
+    font-weight: 700;
+    color: #111;
+  }
+
+  .customer-block .cust-sub {
+    font-size: 10px;
+    color: #555;
+    margin-top: 2px;
+    line-height: 1.6;
+  }
+
+  /* ── Summary boxes ──────────────────────────────────────────── */
+  .summary-boxes {
+    display: flex;
+    gap: 10px;
+    align-items: flex-start;
+  }
+
+  .summary-box {
+    border: 1px solid #ccc;
+    padding: 8px 14px;
+    min-width: 110px;
+    text-align: center;
+  }
+
+  .summary-box .box-label {
+    font-size: 8.5px;
+    text-transform: uppercase;
+    letter-spacing: 0.7px;
+    color: #888;
+    margin-bottom: 4px;
+  }
+
+  .summary-box .box-value {
+    font-size: 13px;
+    font-weight: 700;
+    color: #111;
+  }
+
+  .summary-box.balance-due {
+    border-color: #111;
+    border-width: 2px;
+  }
+
+  /* ── Transactions table ─────────────────────────────────────── */
+  table {
+    width: 100%;
+    border-collapse: collapse;
+    margin-bottom: 20px;
+  }
+
+  thead tr {
+    border-top: 2px solid #111;
+    border-bottom: 2px solid #111;
+  }
+
+  thead th {
+    padding: 7px 8px;
+    text-align: left;
+    font-size: 9px;
+    text-transform: uppercase;
+    letter-spacing: 0.7px;
+    font-weight: 700;
+    color: #111;
+    background: #fff;
+  }
+
+  thead th.num { text-align: right; }
+
+  tbody td {
+    padding: 6px 8px;
+    font-size: 10.5px;
+    border-bottom: 1px solid #eee;
+    color: #222;
+    vertical-align: middle;
+  }
+
+  tbody td.num {
+    text-align: right;
+    font-variant-numeric: tabular-nums;
+  }
+
+  /* Opening / closing rows */
+  tr.system-row td {
+    background: #f7f7f7;
+    font-weight: 700;
+    border-bottom: 1px solid #ccc;
+    color: #111;
+  }
+
+  /* Credit note row — slightly muted */
+  tr.credit-note-row td {
+    color: #555;
+    font-style: italic;
+  }
+
+  /* ── Ageing section ─────────────────────────────────────────── */
+  .ageing-section {
+    margin-top: 8px;
+    border-top: 2px solid #111;
+    padding-top: 10px;
+  }
+
+  .ageing-section .ageing-title {
+    font-size: 9px;
+    text-transform: uppercase;
+    letter-spacing: 0.8px;
+    font-weight: 700;
+    color: #111;
+    margin-bottom: 8px;
+  }
+
+  .ageing-grid {
+    display: flex;
+    gap: 0;
+    border: 1px solid #ccc;
+  }
+
+  .ageing-cell {
+    flex: 1;
+    padding: 8px 10px;
+    border-right: 1px solid #ccc;
+    text-align: center;
+  }
+
+  .ageing-cell:last-child { border-right: none; }
+
+  .ageing-cell .ag-label {
+    font-size: 8.5px;
+    text-transform: uppercase;
+    letter-spacing: 0.5px;
+    color: #888;
+    margin-bottom: 4px;
+  }
+
+  .ageing-cell .ag-value {
+    font-size: 12px;
+    font-weight: 700;
+    color: #111;
+  }
+
+  /* ── Footer ─────────────────────────────────────────────────── */
+  .print-footer {
+    margin-top: 24px;
+    border-top: 1px solid #ddd;
+    padding-top: 10px;
+    display: flex;
+    justify-content: space-between;
+    font-size: 9px;
+    color: #aaa;
+  }
+
+  @media print {
+    body { padding: 0 28px 24px 28px; }
+  }
+
+</style>
+</head>
+<body>
+
+{%- set company_doc   = frappe.get_doc("Company", doc.company) -%}
+{%- set customer_doc  = frappe.get_doc("Customer", doc.customer) -%}
+{%- set currency      = doc.currency or company_doc.default_currency -%}
+
+{%- set address_html = "" -%}
+{%- if customer_doc.customer_primary_address -%}
+  {%- set addr = frappe.get_doc("Address", customer_doc.customer_primary_address) -%}
+  {%- set address_html = [
+      addr.address_line1 or "",
+      addr.address_line2 or "",
+      addr.city or "",
+      addr.country or ""
+    ] | select | join(", ") -%}
+{%- endif -%}
+
+<!-- ════════════════════════════════════════════════════════════
+     LETTERHEAD ZONE
+     ERPNext places the selected Letter Head content here when
+     the user prints "With Letterhead". Leave this div as-is.
+     ════════════════════════════════════════════════════════════ -->
+<div class="letterhead-zone"></div>
+
+<!-- Company header — displayed when no letterhead is active -->
+<div class="company-header">
+  <div class="company-name">{{ company_doc.company_name }}</div>
+  <div class="company-sub">
+    {%- if company_doc.address -%}{{ company_doc.address }}&ensp;|&ensp;{%- endif -%}
+    {%- if company_doc.phone_no -%}Tel: {{ company_doc.phone_no }}&ensp;|&ensp;{%- endif -%}
+    {%- if company_doc.email -%}{{ company_doc.email }}{%- endif -%}
+  </div>
+</div>
+
+<!-- Title bar -->
+<div class="title-bar">
+  <div class="doc-title">Statement of Account</div>
+  <div class="period-label">
+    Period: {{ frappe.format(doc.from_date, "Date") }} – {{ frappe.format(doc.to_date, "Date") }}<br/>
+    Currency: {{ currency }}
+  </div>
+</div>
+
+<!-- Customer + summary boxes -->
+{%- set ns = namespace(closing=0, total_debit=0.0, total_credit=0.0,
+                       ag_current=0.0, ag_30=0.0, ag_60=0.0, ag_90=0.0, ag_over=0.0,
+                       has_ageing=false) -%}
+{%- for row in data -%}
+  {%- if row.is_closing -%}{%- set ns.closing = row.balance -%}{%- endif -%}
+  {%- if not row.is_opening and not row.is_closing and not row.is_ageing and not row.is_separator -%}
+    {%- set ns.total_debit  = ns.total_debit  + (row.debit  | float) -%}
+    {%- set ns.total_credit = ns.total_credit + (row.credit | float) -%}
+  {%- endif -%}
+  {%- if row.is_ageing -%}
+    {%- set ns.has_ageing = true -%}
+    {%- set lbl = (row.description or "") | lower -%}
+    {%- if   "current" in lbl   -%}{%- set ns.ag_current = row.balance | float -%}
+    {%- elif "1 –" in lbl       -%}{%- set ns.ag_30      = row.balance | float -%}
+    {%- elif "31 –" in lbl      -%}{%- set ns.ag_60      = row.balance | float -%}
+    {%- elif "61 –" in lbl      -%}{%- set ns.ag_90      = row.balance | float -%}
+    {%- elif "over 90" in lbl   -%}{%- set ns.ag_over    = row.balance | float -%}
+    {%- endif -%}
+  {%- endif -%}
+{%- endfor -%}
+
+<div class="customer-section">
+  <div class="customer-block">
+    <div class="label">Bill To</div>
+    <div class="cust-name">{{ customer_doc.customer_name }}</div>
+    {%- if address_html -%}<div class="cust-sub">{{ address_html }}</div>{%- endif -%}
+    {%- if customer_doc.tax_id -%}<div class="cust-sub">PIN / Tax ID: {{ customer_doc.tax_id }}</div>{%- endif -%}
+  </div>
+
+  <div class="summary-boxes">
+    <div class="summary-box">
+      <div class="box-label">Total Invoiced</div>
+      <div class="box-value">{{ frappe.format(ns.total_debit,  {"fieldtype":"Currency","options":currency}) }}</div>
+    </div>
+    <div class="summary-box">
+      <div class="box-label">Total Receipts</div>
+      <div class="box-value">{{ frappe.format(ns.total_credit, {"fieldtype":"Currency","options":currency}) }}</div>
+    </div>
+    <div class="summary-box balance-due">
+      <div class="box-label">Balance Due</div>
+      <div class="box-value">{{ frappe.format(ns.closing, {"fieldtype":"Currency","options":currency}) }}</div>
+    </div>
+  </div>
+</div>
+
+<!-- Transactions table -->
+<table>
+  <thead>
+    <tr>
+      <th>Date</th>
+      <th>Type</th>
+      <th>Reference No</th>
+      <th>Description</th>
+      <th>Due Date</th>
+      <th class="num">Debit</th>
+      <th class="num">Credit</th>
+      <th class="num">Balance</th>
+    </tr>
+  </thead>
+  <tbody>
+  {%- for row in data -%}
+
+    {%- if row.is_separator -%}{# skip #}
+
+    {%- elif row.is_ageing -%}{# rendered separately below #}
+
+    {%- elif row.is_opening or row.is_closing -%}
+    <tr class="system-row">
+      <td>{{ frappe.format(row.posting_date, "Date") if row.posting_date else "" }}</td>
+      <td colspan="4">{{ row.description }}</td>
+      <td class="num">
+        {%- if row.debit is not none and row.debit != "" -%}
+          {{ frappe.format(row.debit, {"fieldtype":"Currency","options":currency}) }}
+        {%- endif -%}
+      </td>
+      <td class="num">
+        {%- if row.credit is not none and row.credit != "" -%}
+          {{ frappe.format(row.credit, {"fieldtype":"Currency","options":currency}) }}
+        {%- endif -%}
+      </td>
+      <td class="num">{{ frappe.format(row.balance, {"fieldtype":"Currency","options":currency}) }}</td>
+    </tr>
+
+    {%- else -%}
+    <tr class="{{ 'credit-note-row' if row.display_type == 'Credit Note' else '' }}">
+      <td>{{ frappe.format(row.posting_date, "Date") if row.posting_date else "" }}</td>
+      <td>{{ row.display_type or "" }}</td>
+      <td>{{ row.voucher_no or "" }}</td>
+      <td>{{ row.description or "" }}</td>
+      <td>{{ frappe.format(row.due_date, "Date") if row.due_date else "" }}</td>
+      <td class="num">
+        {%- if row.debit -%}{{ frappe.format(row.debit, {"fieldtype":"Currency","options":currency}) }}{%- endif -%}
+      </td>
+      <td class="num">
+        {%- if row.credit -%}{{ frappe.format(row.credit, {"fieldtype":"Currency","options":currency}) }}{%- endif -%}
+      </td>
+      <td class="num">{{ frappe.format(row.balance, {"fieldtype":"Currency","options":currency}) }}</td>
+    </tr>
+    {%- endif -%}
+
+  {%- endfor -%}
+  </tbody>
+</table>
+
+<!-- Ageing summary grid (only if present in data) -->
+{%- if ns.has_ageing -%}
+<div class="ageing-section">
+  <div class="ageing-title">Ageing Summary</div>
+  <div class="ageing-grid">
+    <div class="ageing-cell">
+      <div class="ag-label">Current</div>
+      <div class="ag-value">{{ frappe.format(ns.ag_current, {"fieldtype":"Currency","options":currency}) }}</div>
+    </div>
+    <div class="ageing-cell">
+      <div class="ag-label">1 – 30 Days</div>
+      <div class="ag-value">{{ frappe.format(ns.ag_30, {"fieldtype":"Currency","options":currency}) }}</div>
+    </div>
+    <div class="ageing-cell">
+      <div class="ag-label">31 – 60 Days</div>
+      <div class="ag-value">{{ frappe.format(ns.ag_60, {"fieldtype":"Currency","options":currency}) }}</div>
+    </div>
+    <div class="ageing-cell">
+      <div class="ag-label">61 – 90 Days</div>
+      <div class="ag-value">{{ frappe.format(ns.ag_90, {"fieldtype":"Currency","options":currency}) }}</div>
+    </div>
+    <div class="ageing-cell">
+      <div class="ag-label">Over 90 Days</div>
+      <div class="ag-value">{{ frappe.format(ns.ag_over, {"fieldtype":"Currency","options":currency}) }}</div>
+    </div>
+  </div>
+</div>
+{%- endif -%}
+
+<!-- Footer -->
+<div class="print-footer">
+  <span>Generated: {{ frappe.utils.formatdate(frappe.utils.nowdate()) }} &nbsp;|&nbsp; {{ company_doc.company_name }}</span>
+  <span>This is a computer-generated statement and requires no signature.</span>
+</div>
+
+</body>
+</html>

@@ -1,8 +1,7 @@
 // Copyright (c) 2026, jeniffer@upande.com and contributors
 // For license information, please see license.txt
 
-
-frappe.query_reports["Advance Payment Register"] = {
+frappe.query_reports["VAT3 Filing Summary"] = {
 
     filters: [
         {
@@ -17,94 +16,78 @@ frappe.query_reports["Advance Payment Register"] = {
             fieldname: "from_date",
             label: __("From Date"),
             fieldtype: "Date",
-            default: frappe.datetime.add_months(frappe.datetime.get_today(), -1),
+            // Default to first day of current month
+            default: frappe.datetime.month_start(),
             reqd: 1,
         },
         {
             fieldname: "to_date",
             label: __("To Date"),
             fieldtype: "Date",
-            default: frappe.datetime.get_today(),
+            default: frappe.datetime.month_end(),
             reqd: 1,
         },
         {
-            fieldname: "party_type",
-            label: __("Party Type"),
-            fieldtype: "Select",
-            options: "\nCustomer\nSupplier",
-            on_change: function () {
-                const partyType = frappe.query_report.get_filter_value("party_type");
-                frappe.query_report.set_filter_value("party", "");
-                frappe.query_report.get_filter("party").df.options = partyType || "Customer";
-                frappe.query_report.get_filter("party").refresh();
-            },
-        },
-        {
-            fieldname: "party",
-            label: __("Party"),
+            // Dynamically lists only accounts tagged as VAT3 report accounts.
+            // If multiple VAT3 accounts exist the report shows all; selecting
+            // one here restricts to that account's rows only.
+            fieldname: "vat_account",
+            label: __("VAT Account"),
             fieldtype: "Link",
-            options: "Customer",
+            options: "Account",
             get_query: function () {
-                const partyType =
-                    frappe.query_report.get_filter_value("party_type") || "Customer";
-                return { doctype: partyType };
+                const company = frappe.query_report.get_filter_value("company");
+                return {
+                    filters: {
+                        account_type:          "Tax",
+                        is_tax_report_account: 1,
+                        tax_report_type:       "VAT3",
+                        company:               company || undefined,
+                    },
+                };
             },
         },
         {
-            fieldname: "payment_status",
-            label: __("Payment Status"),
-            fieldtype: "Select",
-            options: "\nFully Allocated\nPartially Allocated\nUnallocated",
+            fieldname: "supplier",
+            label: __("Supplier"),
+            fieldtype: "Link",
+            options: "Supplier",
         },
         {
-            fieldname: "advance_type",
-            label: __("Advance Type"),
+            fieldname: "type_of_purchase",
+            label: __("Type of Purchase"),
             fieldtype: "Select",
-            options: "\nOrder-Based Advance\nUnallocated Advance\nPartially Used Advance",
+            options: "\nLocal\nImport",
         },
     ],
 
     // ------------------------------------------------------------------
-    // Conditional row formatting
+    // Column formatting
     // ------------------------------------------------------------------
     formatter: function (value, row, column, data, default_formatter) {
         value = default_formatter(value, row, column, data);
 
         if (!data) return value;
 
-        if (column.fieldname === "payment_status") {
-            const colours = {
-                "Fully Allocated":     "green",
-                "Partially Allocated": "orange",
-                "Unallocated":         "red",
-            };
-            const colour = colours[data.payment_status];
-            if (colour) {
-                value = `<span style="color:${colour}; font-weight:600;">${data.payment_status}</span>`;
+        // Colour-code purchase type
+        if (column.fieldname === "type_of_purchase") {
+            if (data.type_of_purchase === "Local") {
+                value = `<span style="color:#1a6ebd; font-weight:600;">Local</span>`;
+            } else if (data.type_of_purchase === "Import") {
+                value = `<span style="color:#e67e22; font-weight:600;">Import</span>`;
             }
         }
 
-        if (column.fieldname === "advance_type") {
-            const colours = {
-                "Order-Based Advance":    "#1a6ebd",
-                "Unallocated Advance":    "#c0392b",
-                "Partially Used Advance": "#e67e22",
-            };
-            const colour = colours[data.advance_type];
-            if (colour) {
-                value = `<span style="color:${colour}; font-weight:600;">${data.advance_type}</span>`;
-            }
-        }
-
-        if (column.fieldname === "unallocated_amount" && flt(data.unallocated_amount) > 0) {
-            value = `<span style="color:darkorange;">${value}</span>`;
+        // Flag rows with zero VAT — may need review
+        if (column.fieldname === "vat_amount" && flt(data.vat_amount) === 0) {
+            value = `<span style="color:#c0392b; font-weight:600;">0.00</span>`;
         }
 
         return value;
     },
 
     // ------------------------------------------------------------------
-    // Checkbox column
+    // Checkbox + row highlight
     // ------------------------------------------------------------------
     get_datatable_options(options) {
         return Object.assign(options, {
@@ -112,9 +95,6 @@ frappe.query_reports["Advance Payment Register"] = {
         });
     },
 
-    // ------------------------------------------------------------------
-    // Row highlight on checkbox selection
-    // ------------------------------------------------------------------
     after_datatable_render: function (datatable) {
         const HIGHLIGHT_BG     = "#fff9c4";
         const HIGHLIGHT_BORDER = "2px solid #f5a623";
@@ -124,7 +104,6 @@ frappe.query_reports["Advance Payment Register"] = {
             || (datatable.bodyScrollable && datatable.bodyScrollable.closest(".datatable"));
 
         if (!wrapper) return;
-
         if (wrapper.__highlightListenerAttached) return;
         wrapper.__highlightListenerAttached = true;
 
@@ -133,9 +112,7 @@ frappe.query_reports["Advance Payment Register"] = {
             if (!checkbox) return;
 
             const tr = checkbox.closest("tr");
-            if (!tr) return;
-
-            if (tr.closest("thead")) return;
+            if (!tr || tr.closest("thead")) return;
 
             const isChecked = checkbox.checked;
 

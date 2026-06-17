@@ -193,12 +193,12 @@ def get_data(filters):
             -- G: Customs Entry Number (custom field, relevant for imports)
             pi.custom_entry_number          AS custom_entry_number,
 
-            -- H: Taxable Value — net amount in company currency
-            pi.net_total                    AS net_total_company_currency,
+            -- H: Taxable Value — net amount in base currency (KES)
+            pi.base_net_total               AS net_total_company_currency,
 
-            -- I: VAT Amount — summed from Purchase Taxes and Charges for VAT3 accounts
+            -- I: VAT Amount — summed from Purchase Taxes and Charges for VAT3 accounts, in base currency (KES)
             COALESCE((
-                SELECT SUM(ptc.tax_amount_after_discount_amount)
+                SELECT SUM(ptc.base_tax_amount_after_discount_amount)
                 FROM   `tabPurchase Taxes and Charges` ptc
                 WHERE  ptc.parent      = pi.name
                   AND  ptc.account_head IN ({vat_placeholders})

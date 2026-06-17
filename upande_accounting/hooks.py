@@ -33,13 +33,32 @@ fixtures = [
            },
        ]
 doc_events = {
+    "Item": {
+        "validate": "upande_accounting.utils.validate_item_type",
+    },
     "Purchase Invoice": {
-        "before_save": "upande_accounting.utils.sync_tds_from_item_tax_template",
-        "on_submit": "upande_accounting.withholding_tax_register.create_unpaid_wtp_on_submit",
-        "on_cancel": "upande_accounting.withholding_tax_register.cancel_wtp_on_invoice_cancel",
+        # Runs before ERPNext's validate() → apply_tds is correct when calculate_taxes_and_totals() fires
+        "before_validate": [
+            "upande_accounting.utils.sync_is_service_item_on_pi",
+            "upande_accounting.utils.sync_tds_from_item_tax_template",
+            "upande_accounting.utils.remove_orphaned_withholding_tax_rows",
+            "upande_accounting.utils.recalculate_withholding_tax_amounts",
+        ],
+        # Runs after ERPNext's validate() → corrects amounts overridden by set_tax_withholding()
+        "validate": [
+            "upande_accounting.utils.recalculate_withholding_tax_amounts",
+            "upande_accounting.utils.validate_service_withholding_category",
+            "upande_accounting.utils.set_withholding_tax_rates",
+            "upande_accounting.utils.validate_withholding_in_taxes_table",
+        ],
+        # "on_submit": "upande_accounting.withholding_tax_register.create_unpaid_wtp_on_submit",
+        # "on_cancel": "upande_accounting.withholding_tax_register.cancel_wtp_on_invoice_cancel",
     },
     "Purchase Order": {
-        "before_save": "upande_accounting.utils.sync_tds_from_item_tax_template"
+        "before_validate": [
+            "upande_accounting.utils.sync_is_service_item_on_pi",
+            "upande_accounting.utils.sync_tds_from_item_tax_template",
+        ],
     }
 }
 # Includes in <head>
@@ -64,7 +83,9 @@ doc_events = {
 # page_js = {"page" : "public/js/file.js"}
 
 # include js in doctype views
-# doctype_js = {"doctype" : "public/js/doctype.js"}
+doctype_js = {
+    "Item": "public/js/item.js",
+}
 # doctype_list_js = {"doctype" : "public/js/doctype_list.js"}
 # doctype_tree_js = {"doctype" : "public/js/doctype_tree.js"}
 # doctype_calendar_js = {"doctype" : "public/js/doctype_calendar.js"}

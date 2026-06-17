@@ -258,6 +258,16 @@ def recalculate_withholding_tax_amounts(doc, _method=None):
 
 
 # ---------------------------------------------------------------------------
+# before_save hooks
+# ---------------------------------------------------------------------------
+
+def set_gross_amount(doc, _method=None):
+    net_total = doc.net_total or 0
+    added = doc.taxes_and_charges_added or 0
+    doc.gross_amount = net_total + added
+
+
+# ---------------------------------------------------------------------------
 # validate hooks — run AFTER ERPNext's calculate_taxes_and_totals()
 # ---------------------------------------------------------------------------
 

@@ -37,6 +37,19 @@ function toggleAgeingRows(show) {
 
 frappe.query_reports["Customer Statement Of Account"] = {
 
+    onload: function (report) {
+        // Top-right button: back to summary with current dates
+        report.page.add_inner_button(__("Statement Summary"), function () {
+            frappe.route_options = {
+                company:       frappe.query_report.get_filter_value("company"),
+                from_date:     frappe.query_report.get_filter_value("from_date"),
+                to_date:       frappe.query_report.get_filter_value("to_date"),
+                include_draft: frappe.query_report.get_filter_value("include_draft") || 0,
+            };
+            frappe.set_route("query-report", "Customer Statement Summary");
+        });
+    },
+
     filters: [
         {
             fieldname: "company",
@@ -84,10 +97,16 @@ frappe.query_reports["Customer Statement Of Account"] = {
             default: frappe.defaults.get_user_default("currency"),
         },
         {
+            fieldname: "include_draft",
+            label: __("Include Draft Invoices"),
+            fieldtype: "Check",
+            default: 0,
+        },
+        {
             fieldname: "show_ageing",
             label: __("Show Ageing Summary"),
             fieldtype: "Check",
-            default: 1,
+            default: 0,
             on_change: function () {
                 // Instantly toggle visibility without a full server re-run.
                 // The Python also respects this flag — a manual Refresh will
@@ -105,13 +124,18 @@ frappe.query_reports["Customer Statement Of Account"] = {
         value = default_formatter(value, row, column, data);
         if (!data) return value;
 
-        // Opening / closing balance — bold
+        // Opening / closing balance — bold all cells
         if (data.is_opening || data.is_closing) {
             value = `<strong>${value || ""}</strong>`;
         }
 
-        // Document type labels
-        if (column.fieldname === "display_type") {
+        // Ageing separator — section heading in the Document Type column
+        if (data.is_separator && column.fieldname === "display_type") {
+            value = `<span style="color:#888; font-size:0.85em; font-weight:600; letter-spacing:0.04em; text-transform:uppercase;">${value || ""}</span>`;
+        }
+
+        // Document type labels (normal invoice rows)
+        if (column.fieldname === "display_type" && !data.is_ageing && !data.is_separator && !data.is_opening && !data.is_closing) {
             if (data.display_type === "Credit Note") {
                 value = `<span style="font-weight:300;">Credit Note</span>`;
             } else if (data.display_type === "Receipt") {
@@ -121,30 +145,34 @@ frappe.query_reports["Customer Statement Of Account"] = {
             }
         }
 
-        // Overdue balance on invoice rows
+        // Balance colour on invoice rows — uses ageing_level computed in Python
+        // against to_date, so "overdue" reflects the report date, not today.
         if (
             column.fieldname === "balance" &&
             data.voucher_type === "Sales Invoice" &&
-            !data.is_return &&
-            data.due_date &&
-            frappe.datetime.str_to_obj(data.due_date) < new Date() &&
-            flt(data.balance) > 0
+            flt(data.balance) > 0 &&
+            data.ageing_level !== null && data.ageing_level !== undefined
         ) {
-            value = `<span style="color:#c0392b;">${value}</span>`;
+            // 5 distinct hue families: green → blue → amber → purple → red (critical)
+            const colours = ["#27ae60", "#2980b9", "#f39c12", "#8e44ad", "#e74c3c"];
+            const colour  = colours[Math.min(data.ageing_level, colours.length - 1)];
+            value = `<span style="color:${colour}; font-weight:500;">${value}</span>`;
         }
 
-        // Ageing rows — muted italic label, colour-coded amount
+        // Draft invoice rows — orange italic
+        if (data.is_draft) {
+            value = `<span style="color:#e67e22; font-style:italic;">${value || ""}</span>`;
+        }
+
+        // Ageing rows — label in display_type, amount colour-coded by ageing_level
         if (data.is_ageing) {
-            if (column.fieldname === "description") {
+            if (column.fieldname === "display_type") {
                 value = `<em style="color:#555;">${value || ""}</em>`;
             }
             if (column.fieldname === "balance" && flt(data.balance) > 0) {
-                const label = (data.description || "").toLowerCase();
-                let colour = "#27ae60";
-                if      (label.includes("over 90")) colour = "#c0392b";
-                else if (label.includes("61"))       colour = "#e74c3c";
-                else if (label.includes("31"))       colour = "#e67e22";
-                else if (label.includes("1 –"))      colour = "#f39c12";
+                // 5 distinct hue families: green → blue → amber → red → purple
+                const colours = ["#27ae60", "#2980b9", "#f39c12", "#e74c3c", "#8e44ad"];
+                const colour  = colours[Math.min(data.ageing_level || 0, colours.length - 1)];
                 value = `<span style="color:${colour}; font-weight:600;">${value}</span>`;
             }
         }

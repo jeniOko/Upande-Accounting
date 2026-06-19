@@ -61,7 +61,7 @@ def get_columns():
             "label": _("Document Type"),
             "fieldname": "display_type",
             "fieldtype": "Data",
-            "width": 120,
+            "width": 200,
         },
         {
             "label": _("Document No"),
@@ -152,6 +152,11 @@ def resolve_voucher(voucher_type, voucher_no):
     }
 
     try:
+        if voucher_type == "Draft Sales Invoice":
+            result["display_type"] = _("Draft Invoice")
+            result["description"]  = _("Draft Invoice (unsubmitted)")
+            return result
+
         if voucher_type == "Sales Invoice":
             row = frappe.db.get_value(
                 "Sales Invoice", voucher_no,
@@ -196,13 +201,44 @@ def resolve_voucher(voucher_type, voucher_no):
 # Core data builder
 # ---------------------------------------------------------------------------
 
+def get_draft_transactions(customer, company, from_date, to_date):
+    """Return draft Sales Invoice rows shaped like GL-entry transaction dicts."""
+    rows = frappe.db.sql(
+        """
+        SELECT
+            si.name         AS voucher_no,
+            si.posting_date AS posting_date,
+            si.grand_total  AS debit,
+            0               AS credit,
+            si.creation     AS creation,
+            'Draft Sales Invoice' AS voucher_type
+        FROM `tabSales Invoice` si
+        WHERE
+            si.customer      = %s
+            AND si.docstatus = 0
+            AND si.posting_date BETWEEN %s AND %s
+            AND si.company   = %s
+        ORDER BY si.posting_date, si.creation
+        """,
+        (customer, from_date, to_date, company),
+        as_dict=True,
+    )
+    return rows
+
+
 def get_data(filters):
-    company      = filters.get("company")
-    customer     = filters["customer"]
-    from_date    = filters["from_date"]
-    to_date      = filters["to_date"]
-    show_ageing  = filters.get("show_ageing", 1)
-    currency     = get_customer_currency(customer, company)
+    company       = filters.get("company")
+    customer      = filters["customer"]
+    from_date     = filters["from_date"]
+    to_date       = filters["to_date"]
+    show_ageing   = filters.get("show_ageing", 1)
+    include_draft = filters.get("include_draft")
+    currency      = get_customer_currency(customer, company)
+
+    # Reference date for aging: to_date, not actual today.
+    # This ensures "overdue as of the report date", not "overdue as of right now".
+    ref_date       = getdate(to_date)
+    aging_interval = get_payment_term_interval(customer)
 
     accounts = get_receivable_accounts(company)
     if not accounts:
@@ -272,6 +308,16 @@ def get_data(filters):
 
     transactions = frappe.db.sql(txn_sql, tuple(txn_vals), as_dict=True)
 
+    # Merge draft invoices if requested
+    if include_draft and company:
+        draft_rows = get_draft_transactions(customer, company, from_date, to_date)
+        all_txns = sorted(
+            list(transactions) + draft_rows,
+            key=lambda r: (str(r.get("posting_date") or ""), str(r.get("creation") or "")),
+        )
+    else:
+        all_txns = list(transactions)
+
     # ------------------------------------------------------------------
     # 3. Assemble rows
     # ------------------------------------------------------------------
@@ -282,7 +328,7 @@ def get_data(filters):
     data.append({
         "posting_date": from_date,
         "voucher_type": "",
-        "display_type": "",
+        "display_type": _("Opening Balance"),
         "voucher_no":   "",
         "description":  _("Opening Balance"),
         "due_date":     None,
@@ -293,31 +339,52 @@ def get_data(filters):
         "is_opening":   True,
     })
 
-    for txn in transactions:
+    for txn in all_txns:
         running_balance += flt(txn.debit) - flt(txn.credit)
         resolved = resolve_voucher(txn.voucher_type, txn.voucher_no)
 
         # For receipts use reference_date when available, else fall back to posting_date
         display_date = resolved["display_date"] or txn.posting_date
 
+        is_draft   = (txn.voucher_type == "Draft Sales Invoice")
+        due_date   = resolved["due_date"]
+
+        # Compute aging level per invoice row using to_date as reference,
+        # so coloring reflects the state on the report date, not today.
+        row_ageing_level = None
+        if due_date and txn.voucher_type == "Sales Invoice":
+            days_overdue = (ref_date - getdate(due_date)).days
+            if days_overdue <= 0:
+                row_ageing_level = 0   # current / not yet due
+            elif days_overdue <= aging_interval:
+                row_ageing_level = 1
+            elif days_overdue <= 2 * aging_interval:
+                row_ageing_level = 2
+            elif days_overdue <= 3 * aging_interval:
+                row_ageing_level = 3
+            else:
+                row_ageing_level = 4
+
         data.append({
-            "posting_date": display_date,
-            "voucher_type": txn.voucher_type,       # kept for Dynamic Link resolution
-            "display_type": resolved["display_type"],
-            "voucher_no":   txn.voucher_no,
-            "description":  resolved["description"],
-            "due_date":     resolved["due_date"],
-            "debit":        flt(txn.debit),
-            "credit":       flt(txn.credit),
-            "balance":      running_balance,
-            "currency":     currency,
+            "posting_date":  display_date,
+            "voucher_type":  txn.voucher_type,
+            "display_type":  resolved["display_type"],
+            "voucher_no":    txn.voucher_no,
+            "description":   resolved["description"],
+            "due_date":      due_date,
+            "debit":         flt(txn.debit),
+            "credit":        flt(txn.credit),
+            "balance":       running_balance,
+            "currency":      currency,
+            "is_draft":      is_draft,
+            "ageing_level":  row_ageing_level,
         })
 
     # Closing balance row
     data.append({
         "posting_date": to_date,
         "voucher_type": "",
-        "display_type": "",
+        "display_type": _("Closing Balance"),
         "voucher_no":   "",
         "description":  _("Closing Balance"),
         "due_date":     None,
@@ -331,7 +398,13 @@ def get_data(filters):
     # Ageing — appended when show_ageing is 1/True.
     # ERPNext can pass the value as int 1/0 or string "1"/"0" depending on version.
     if str(show_ageing) not in ("0", "False", "false", ""):
-        data += get_ageing_summary(transactions, currency)
+        data += get_ageing_summary(
+            currency,
+            customer=customer,
+            company=company,
+            to_date=to_date,
+            accounts=accounts,
+        )
 
     return data
 
@@ -340,61 +413,126 @@ def get_data(filters):
 # Ageing summary
 # ---------------------------------------------------------------------------
 
-def get_ageing_summary(transactions, currency):
-    today = getdate(nowdate())
+def get_payment_term_interval(customer):
+    """
+    Return the credit_days from the customer's Payment Terms Template,
+    used as the ageing bucket width. Defaults to 30 if unset.
+    """
+    pt_name = frappe.db.get_value("Customer", customer, "payment_terms")
+    if pt_name:
+        rows = frappe.get_all(
+            "Payment Terms Template Detail",
+            filters={"parent": pt_name},
+            fields=["credit_days"],
+            order_by="idx asc",
+            limit=1,
+        )
+        if rows and rows[0].get("credit_days"):
+            return int(rows[0].credit_days)
+    return 30
+
+
+def get_ageing_summary(currency, customer=None, company=None, to_date=None, accounts=None):
+    """
+    Build 4 ageing buckets sized to the customer's payment terms interval
+    (defaults to 30 days). Buckets are: current, 1×, 2×, 3×, 3×+ the interval.
+
+    Queries ALL GL entries up to to_date (not just the report period) so that
+    invoices raised before from_date but still outstanding are correctly aged.
+    Uses to_date as the reference date so the report reflects the state on that
+    day — not the actual current date.
+    """
+    interval = get_payment_term_interval(customer) if customer else 30
+    ref_date  = getdate(to_date) if to_date else getdate(nowdate())
+
+    # Outstanding balance per voucher as of to_date
     invoice_balances  = {}
     invoice_due_dates = {}
 
-    for txn in transactions:
-        key = txn.voucher_no
-        net = flt(txn.debit) - flt(txn.credit)
-        invoice_balances[key] = invoice_balances.get(key, 0) + net
-        if txn.voucher_type == "Sales Invoice" and key not in invoice_due_dates:
-            row = frappe.db.get_value("Sales Invoice", key, ["due_date", "is_return"], as_dict=True)
-            # Exclude credit notes from ageing
-            if row and not row.is_return:
-                invoice_due_dates[key] = row.due_date
+    if customer and company and accounts and to_date:
+        acc_ph = ", ".join(["%s"] * len(accounts))
+        rows = frappe.db.sql(
+            """
+            SELECT
+                voucher_no,
+                voucher_type,
+                SUM(debit_in_account_currency)  AS total_debit,
+                SUM(credit_in_account_currency) AS total_credit
+            FROM `tabGL Entry`
+            WHERE
+                party_type   = 'Customer'
+                AND party    = %s
+                AND account  IN ({acc_ph})
+                AND posting_date <= %s
+                AND is_cancelled  = 0
+                AND company  = %s
+            GROUP BY voucher_no, voucher_type
+            """.format(acc_ph=acc_ph),
+            tuple([customer] + accounts + [to_date, company]),
+            as_dict=True,
+        )
+        for row in rows:
+            balance = flt(row.total_debit) - flt(row.total_credit)
+            if balance > 0:
+                invoice_balances[row.voucher_no] = balance
+            if row.voucher_type == "Sales Invoice" and row.voucher_no not in invoice_due_dates:
+                si = frappe.db.get_value(
+                    "Sales Invoice", row.voucher_no,
+                    ["due_date", "is_return"], as_dict=True,
+                )
+                if si and not si.is_return and si.due_date:
+                    invoice_due_dates[row.voucher_no] = si.due_date
 
-    buckets = {"current": 0, "1_30": 0, "31_60": 0, "61_90": 0, "above_90": 0}
+    # 5 slots: 0=current, 1=1×, 2=2×, 3=3×, 4=over 3×
+    buckets = [0.0, 0.0, 0.0, 0.0, 0.0]
 
     for voucher_no, balance in invoice_balances.items():
-        if balance <= 0:
-            continue
         due_date = invoice_due_dates.get(voucher_no)
         if not due_date:
-            continue  # skip non-invoice rows (payments, journals) in ageing
-        days_overdue = (today - getdate(due_date)).days
+            continue
+        days_overdue = (ref_date - getdate(due_date)).days
         if days_overdue <= 0:
-            buckets["current"] += balance
-        elif days_overdue <= 30:
-            buckets["1_30"] += balance
-        elif days_overdue <= 60:
-            buckets["31_60"] += balance
-        elif days_overdue <= 90:
-            buckets["61_90"] += balance
+            buckets[0] += balance
+        elif days_overdue <= interval:
+            buckets[1] += balance
+        elif days_overdue <= 2 * interval:
+            buckets[2] += balance
+        elif days_overdue <= 3 * interval:
+            buckets[3] += balance
         else:
-            buckets["above_90"] += balance
+            buckets[4] += balance
+
+    i = interval
+    labels = [
+        _("Current (not yet due)"),
+        _("1 – {0} days overdue").format(i),
+        _("{0} – {1} days overdue").format(i + 1, 2 * i),
+        _("{0} – {1} days overdue").format(2 * i + 1, 3 * i),
+        _("Over {0} days overdue").format(3 * i),
+    ]
 
     separator = {
-        "posting_date": None, "voucher_type": "", "display_type": "",
+        "posting_date": None, "voucher_type": "",
+        "display_type": _("Ageing Summary"),
         "voucher_no": "", "description": "", "due_date": None,
         "debit": None, "credit": None, "balance": None,
         "currency": currency, "is_separator": True,
     }
 
-    def ageing_row(label, amount):
+    def ageing_row(label, amount, level):
         return {
-            "posting_date": None, "voucher_type": "", "display_type": "",
-            "voucher_no": "", "description": label, "due_date": None,
+            "posting_date": None, "voucher_type": "",
+            "display_type": label,   # visible in Document Type column
+            "voucher_no":   "", "description": label, "due_date": None,
             "debit": None, "credit": None, "balance": amount,
-            "currency": currency, "is_ageing": True,
+            "currency": currency, "is_ageing": True, "ageing_level": level,
         }
 
     return [
         separator,
-        ageing_row(_("Current (not yet due)"),   buckets["current"]),
-        ageing_row(_("1 – 30 days overdue"),     buckets["1_30"]),
-        ageing_row(_("31 – 60 days overdue"),    buckets["31_60"]),
-        ageing_row(_("61 – 90 days overdue"),    buckets["61_90"]),
-        ageing_row(_("Over 90 days overdue"),    buckets["above_90"]),
+        ageing_row(labels[0], buckets[0], 0),
+        ageing_row(labels[1], buckets[1], 1),
+        ageing_row(labels[2], buckets[2], 2),
+        ageing_row(labels[3], buckets[3], 3),
+        ageing_row(labels[4], buckets[4], 4),
     ]

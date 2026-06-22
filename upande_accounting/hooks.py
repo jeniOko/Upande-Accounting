@@ -42,6 +42,7 @@ doc_events = {
             "upande_accounting.utils.sync_is_service_item_on_pi",
             "upande_accounting.utils.sync_tds_from_item_tax_template",
             "upande_accounting.utils.remove_orphaned_withholding_tax_rows",
+            "upande_accounting.utils.apply_additional_withholding_rows",
             "upande_accounting.utils.recalculate_withholding_tax_amounts",
         ],
         # Runs after ERPNext's validate() → corrects amounts overridden by set_tax_withholding()

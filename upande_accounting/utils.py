@@ -104,6 +104,89 @@ def _get_withholding_rate_for_date(category_name, posting_date):
 # before_validate hooks — run BEFORE ERPNext's calculate_taxes_and_totals()
 # ---------------------------------------------------------------------------
 
+def apply_additional_withholding_rows(doc, _method=None):
+    """
+    Add a tax row for each custom_withholding_1/2/3 category that does not yet
+    have a corresponding row in the taxes table.
+
+    Must run in before_validate so the rows are present when ERPNext's
+    calculate_taxes_and_totals() fires, ensuring they are included in the
+    grand total on the very first save.
+    """
+    if not doc.get("apply_tds") or not doc.get("apply_multiple_withholding"):
+        return
+
+    custom_cats = [
+        doc.get(f)
+        for f in ("custom_withholding_1", "custom_withholding_2", "custom_withholding_3")
+        if doc.get(f)
+    ]
+    if not custom_cats:
+        return
+
+    existing_accounts = {t.account_head for t in (doc.taxes or [])}
+
+    all_tds_net = sum(
+        (row.net_amount or 0) for row in (doc.items or []) if cint(row.get("apply_tds"))
+    )
+    service_tds_net = sum(
+        (row.net_amount or 0)
+        for row in (doc.items or [])
+        if cint(row.get("apply_tds")) and cint(row.get("custom_is_service_item"))
+    )
+
+    for cat_name in custom_cats:
+        wh_accounts = frappe.get_all(
+            "Tax Withholding Account",
+            filters={"parent": cat_name, "company": doc.company},
+            fields=["account"],
+            limit=1,
+        )
+        if not wh_accounts or not wh_accounts[0].account:
+            frappe.throw(
+                _("No withholding account configured for <b>{0}</b> for company <b>{1}</b>. "
+                  "Please set it up in the Tax Withholding Category.").format(cat_name, doc.company),
+                title=_("Withholding Account Missing"),
+            )
+
+        account = wh_accounts[0].account
+        if account in existing_accounts:
+            continue
+
+        rate = _get_withholding_rate_for_date(cat_name, doc.posting_date) or 0
+        is_service_only = _is_service_only_category(cat_name)
+        base = service_tds_net if is_service_only else all_tds_net
+
+        if is_service_only and base == 0:
+            # No qualifying service items — skip adding the row; the validate hook
+            # will throw an informative error so the user can act on it.
+            continue
+
+        tax_amount = round(base * rate / 100, 2)
+        base_tax_amount = round(tax_amount * (doc.conversion_rate or 1), 2)
+
+        row = {
+            "charge_type": "Actual",
+            "add_deduct_tax": "Deduct",
+            "category": "Total",
+            "account_head": account,
+            "description": "Withholding Tax - {}".format(cat_name),
+            "rate": rate,
+            "tax_amount": tax_amount,
+            "tax_amount_after_discount_amount": tax_amount,
+            "base_tax_amount": base_tax_amount,
+            "base_tax_amount_after_discount_amount": base_tax_amount,
+        }
+
+        # Copy accounting dimensions from the invoice header
+        for dim in frappe.get_all("Accounting Dimension", fields=["fieldname"]):
+            if doc.get(dim.fieldname):
+                row[dim.fieldname] = doc.get(dim.fieldname)
+
+        doc.append("taxes", row)
+        existing_accounts.add(account)
+
+
 def remove_orphaned_withholding_tax_rows(doc, _method=None):
     """
     Remove withholding tax rows whose account no longer belongs to any active
@@ -293,7 +376,7 @@ def validate_service_withholding_category(doc, _method=None):
     )
 
     if not has_qualifying_item:
-        cats_html = ", ".join(f"<b>{c}</b>" for c in service_only_cats)
+        cats_html = ", ".join("<b>{}</b>".format(c) for c in service_only_cats)
         frappe.msgprint(
             _(
                 "No service item in this invoice is applicable to withholding. "

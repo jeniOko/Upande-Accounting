@@ -653,7 +653,7 @@
    "columns": 0,
    "creation": "2025-09-25 22:28:01.133450",
    "default": "1",
-   "depends_on": "doc.apply_multiple_withholding",
+   "depends_on": "eval:doc.apply_multiple_withholding",
    "description": null,
    "docstatus": 0,
    "dt": "Purchase Invoice",

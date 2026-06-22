@@ -28,12 +28,6 @@
    "role": "Accounts Manager"
   },
   {
-   "role": "AR Accountant"
-  },
-  {
-   "role": "Tambuzi Trainer"
-  },
-  {
    "role": "Sales Manager"
   },
   {
@@ -44,9 +38,6 @@
   },
   {
    "role": "Accounts Manager"
-  },
-  {
-   "role": "Employee Self Service"
   }
  ],
  "timeout": 0

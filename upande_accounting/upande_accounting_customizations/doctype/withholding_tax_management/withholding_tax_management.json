@@ -1,0 +1,235 @@
+{
+ "actions": [],
+ "allow_rename": 1,
+ "autoname": "naming_series:",
+ "creation": "2026-06-26 00:00:00.000000",
+ "doctype": "DocType",
+ "editable_grid": 1,
+ "engine": "InnoDB",
+ "field_order": [
+  "naming_series",
+  "company",
+  "col_break_top",
+  "purchase_invoice",
+  "sec_break_supplier",
+  "supplier",
+  "suggested_for_payment",
+  "col_break_invoice",
+  "invoice_number",
+  "cu_invoice_no",
+  "sec_break_category",
+  "withholding_category",
+  "withholding_account",
+  "withheld_amount",
+  "sec_break_payment",
+  "payment_status",
+  "payment_date",
+  "col_break_prn",
+  "prn_number",
+  "journal_entry",
+  "sec_break_pay_refs",
+  "payment_references",
+  "unreconcile_payment"
+ ],
+ "fields": [
+  {
+   "fieldname": "naming_series",
+   "fieldtype": "Select",
+   "label": "Series",
+   "options": "WTM-.YYYY.-",
+   "reqd": 1
+  },
+  {
+   "fetch_from": "purchase_invoice.company",
+   "fetch_if_empty": 0,
+   "fieldname": "company",
+   "fieldtype": "Link",
+   "in_list_view": 0,
+   "label": "Company",
+   "options": "Company",
+   "read_only": 1,
+   "in_standard_filter": 1
+  },
+  {
+   "fieldname": "col_break_top",
+   "fieldtype": "Column Break"
+  },
+  {
+   "fieldname": "purchase_invoice",
+   "fieldtype": "Link",
+   "in_list_view": 0,
+   "label": "Purchase Invoice",
+   "options": "Purchase Invoice",
+   "read_only": 1,
+   "reqd": 1
+  },
+  {
+   "fieldname": "sec_break_supplier",
+   "fieldtype": "Section Break"
+  },
+  {
+   "fieldname": "supplier",
+   "fieldtype": "Link",
+   "in_list_view": 1,
+   "label": "Supplier",
+   "options": "Supplier",
+   "read_only": 1,
+   "in_standard_filter": 1
+  },
+  {
+   "fieldname": "suggested_for_payment",
+   "fieldtype": "Check",
+   "in_list_view": 1,
+   "label": "Invoice Paid",
+   "read_only": 1
+  },
+  {
+   "fieldname": "col_break_invoice",
+   "fieldtype": "Column Break"
+  },
+  {
+   "fetch_from": "purchase_invoice.bill_no",
+   "fetch_if_empty": 0,
+   "fieldname": "invoice_number",
+   "fieldtype": "Data",
+   "in_list_view": 1,
+   "label": "Invoice Number",
+   "read_only": 1
+  },
+  {
+   "fetch_from": "purchase_invoice.custom_control_unit_invoice_number",
+   "fetch_if_empty": 0,
+   "fieldname": "cu_invoice_no",
+   "fieldtype": "Data",
+   "label": "CU Invoice No",
+   "print_hide_if_no_value": 1,
+   "read_only": 1
+  },
+  {
+   "fieldname": "sec_break_category",
+   "fieldtype": "Section Break"
+  },
+  {
+   "fieldname": "withholding_category",
+   "fieldtype": "Link",
+   "label": "Withholding Category",
+   "options": "Tax Withholding Category",
+   "read_only": 1
+  },
+  {
+   "fieldname": "withholding_account",
+   "fieldtype": "Link",
+   "in_list_view": 0,
+   "label": "Withholding Account",
+   "options": "Account",
+   "read_only": 1,
+   "reqd": 1
+  },
+  {
+   "fieldname": "withheld_amount",
+   "fieldtype": "Currency",
+   "in_list_view": 1,
+   "label": "Withheld Amount",
+   "read_only": 1,
+   "reqd": 1
+  },
+  {
+   "fieldname": "sec_break_payment",
+   "fieldtype": "Section Break"
+  },
+  {
+   "default": "Unpaid",
+   "fieldname": "payment_status",
+   "fieldtype": "Select",
+   "in_list_view": 1,
+   "label": "Payment Status",
+   "options": "Unpaid\nPaid",
+   "read_only": 1
+  },
+  {
+   "fieldname": "payment_date",
+   "fieldtype": "Date",
+   "label": "Payment Date",
+   "read_only": 1
+  },
+  {
+   "fieldname": "col_break_prn",
+   "fieldtype": "Column Break"
+  },
+  {
+   "fieldname": "prn_number",
+   "fieldtype": "Data",
+   "label": "PRN Number"
+  },
+  {
+   "fieldname": "journal_entry",
+   "fieldtype": "Link",
+   "label": "Journal Entry",
+   "options": "Journal Entry",
+   "read_only": 1
+  },
+  {
+   "fieldname": "sec_break_pay_refs",
+   "fieldtype": "Section Break",
+   "label": "Payment References"
+  },
+  {
+   "fieldname": "payment_references",
+   "fieldtype": "Table",
+   "label": "Payment References",
+   "options": "WTM Payment Reference",
+   "read_only": 1
+  },
+  {
+   "fieldname": "unreconcile_payment",
+   "fieldtype": "Button",
+   "label": "Unreconcile Payment"
+  }
+ ],
+ "grid_page_length": 50,
+ "index_web_pages_for_search": 1,
+ "links": [
+  {
+   "group": "Withholding Payment",
+   "is_child_table": 1,
+   "link_doctype": "Withholding Payment Entry",
+   "link_fieldname": "wtm_reference",
+   "table_fieldname": "withholding_entries"
+  }
+ ],
+ "modified": "2026-06-26 00:00:00.000000",
+ "modified_by": "Administrator",
+ "module": "Upande Accounting Customizations",
+ "name": "Withholding Tax Management",
+ "naming_rule": "By \"Naming Series\" field",
+ "owner": "Administrator",
+ "permissions": [
+  {
+   "delete": 1,
+   "email": 1,
+   "export": 1,
+   "print": 1,
+   "read": 1,
+   "report": 1,
+   "role": "Accounts Manager",
+   "share": 1,
+   "write": 1
+  },
+  {
+   "email": 1,
+   "export": 1,
+   "print": 1,
+   "read": 1,
+   "report": 1,
+   "role": "Accounts User",
+   "share": 1,
+   "write": 1
+  }
+ ],
+ "row_format": "Dynamic",
+ "sort_field": "modified",
+ "sort_order": "DESC",
+ "states": [],
+ "title_field": "invoice_number",
+ "track_changes": 1
+}

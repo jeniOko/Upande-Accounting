@@ -37,22 +37,7 @@ doc_events = {
         "validate": "upande_accounting.utils.validate_item_type",
     },
     "Purchase Invoice": {
-        # Runs before ERPNext's validate() → apply_tds is correct when calculate_taxes_and_totals() fires
-        "before_validate": [
-            "upande_accounting.utils.sync_is_service_item_on_pi",
-            "upande_accounting.utils.sync_tds_from_item_tax_template",
-            "upande_accounting.utils.remove_orphaned_withholding_tax_rows",
-            "upande_accounting.utils.apply_additional_withholding_rows",
-            "upande_accounting.utils.recalculate_withholding_tax_amounts",
-        ],
-        # Runs after ERPNext's validate() → corrects amounts overridden by set_tax_withholding()
-        "validate": [
-            "upande_accounting.utils.recalculate_withholding_tax_amounts",
-            "upande_accounting.utils.validate_service_withholding_category",
-            "upande_accounting.utils.set_withholding_tax_rates",
-            "upande_accounting.utils.validate_withholding_in_taxes_table",
-        ],
-        "before_save": "upande_accounting.utils.set_gross_amount",
+        "before_save": "upande_accounting.utils.sync_tds_from_item_tax_template",
         # "on_submit": "upande_accounting.withholding_tax_register.create_unpaid_wtp_on_submit",
         # "on_cancel": "upande_accounting.withholding_tax_register.cancel_wtp_on_invoice_cancel",
     },

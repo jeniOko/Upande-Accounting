@@ -21,17 +21,18 @@ app_license = "mit"
 # 	}
 # ]
 fixtures = [
-           {
-               "dt": "Custom Field",
-               "filters": [
-                   ["dt", "in", ["Account"]],
-                   ["fieldname", "in", [
-                       "is_tax_report_account",
-                       "tax_report_type",
-                   ]],
-               ],
-           },
-       ]
+    {
+        "dt": "Custom Field",
+        "filters": [
+            ["dt", "in", ["Account", "Payment Entry Reference"]],
+            ["fieldname", "in", [
+                "is_tax_report_account",
+                "tax_report_type",
+                "custom_cu_invoice_no",
+            ]],
+        ],
+    },
+]
 doc_events = {
     "Item": {
         "validate": "upande_accounting.utils.validate_item_type",
@@ -39,21 +40,30 @@ doc_events = {
     "Purchase Invoice": {
         # Runs before ERPNext's validate() → apply_tds is correct when calculate_taxes_and_totals() fires
         "before_validate": [
+            "upande_accounting.utils.normalize_withholding_categories",
             "upande_accounting.utils.sync_is_service_item_on_pi",
             "upande_accounting.utils.sync_tds_from_item_tax_template",
             "upande_accounting.utils.remove_orphaned_withholding_tax_rows",
+            "upande_accounting.utils.apply_additional_withholding_rows",
             "upande_accounting.utils.recalculate_withholding_tax_amounts",
         ],
         # Runs after ERPNext's validate() → corrects amounts overridden by set_tax_withholding()
         "validate": [
+            "upande_accounting.utils.apply_additional_withholding_rows",
             "upande_accounting.utils.recalculate_withholding_tax_amounts",
             "upande_accounting.utils.validate_service_withholding_category",
             "upande_accounting.utils.set_withholding_tax_rates",
             "upande_accounting.utils.validate_withholding_in_taxes_table",
         ],
         "before_save": "upande_accounting.utils.set_gross_amount",
-        # "on_submit": "upande_accounting.withholding_tax_register.create_unpaid_wtp_on_submit",
-        # "on_cancel": "upande_accounting.withholding_tax_register.cancel_wtp_on_invoice_cancel",
+        "on_submit": "upande_accounting.upande_accounting_customizations.report.withholding_tax_register.withholding_tax_register.create_unpaid_wtp_on_submit",
+        "on_cancel": "upande_accounting.upande_accounting_customizations.report.withholding_tax_register.withholding_tax_register.cancel_wtp_on_invoice_cancel",
+    },
+    "Payment Entry": {
+        "on_submit": "upande_accounting.withholding_tax_management.on_payment_entry_submit",
+        "on_update_after_submit": "upande_accounting.withholding_tax_management.on_payment_entry_update_after_submit",
+        "on_cancel": "upande_accounting.withholding_tax_management.on_payment_entry_cancel",
+        "on_trash": "upande_accounting.withholding_tax_management.on_payment_entry_trash",
     },
     "Purchase Order": {
         "before_validate": [
@@ -86,6 +96,9 @@ doc_events = {
 # include js in doctype views
 doctype_js = {
     "Item": "public/js/item.js",
+    "Payment Entry": "public/js/payment_entry.js",
+    "Purchase Invoice": "public/js/purchase_invoice.js",
+    "Withholding Tax Management": "public/js/withholding_tax_management.js",
 }
 # doctype_list_js = {"doctype" : "public/js/doctype_list.js"}
 # doctype_tree_js = {"doctype" : "public/js/doctype_tree.js"}

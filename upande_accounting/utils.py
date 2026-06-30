@@ -4,6 +4,60 @@ from frappe.utils import cint
 
 
 # ---------------------------------------------------------------------------
+# Withholding category normalization — must run FIRST in before_validate
+# ---------------------------------------------------------------------------
+
+def normalize_withholding_categories(doc, _method=None):
+    """
+    ERPNext's set_tax_withholding() bases its calculation on items with apply_tds=1.
+    A service-only category in tax_withholding_category would therefore produce 0 or be
+    dropped, causing a debit/credit mismatch at submit time.
+
+    Guarantee tax_withholding_category never holds a service-only category:
+    - If a non-service-only category exists in custom_withholding_1/2/3, swap — the
+      non-service one moves to tax_withholding_category, the service-only one takes
+      its place in the custom field.
+    - If no swap candidate exists, move the service-only category to the first empty
+      custom field and clear tax_withholding_category.
+    """
+    std_cat = doc.get("tax_withholding_category")
+    if not std_cat or not _is_service_only_category(std_cat):
+        return
+
+    custom_fields = ["custom_withholding_1", "custom_withholding_2", "custom_withholding_3"]
+
+    # Prefer swapping with a non-service-only custom category
+    for f in custom_fields:
+        val = doc.get(f)
+        if val and not _is_service_only_category(val):
+            doc.tax_withholding_category = val
+            doc.set(f, std_cat)
+            return
+
+    # No swap candidate — move to first empty custom field and uncheck apply_tds so
+    # ERPNext's set_tax_withholding() is fully bypassed (empty standard category + unchecked).
+    for f in custom_fields:
+        if not doc.get(f):
+            doc.set(f, std_cat)
+            doc.tax_withholding_category = ""
+            doc.apply_tds = 0
+            doc.apply_multiple_withholding = 1
+            slot = custom_fields.index(f) + 1
+            if int(doc.get("custom_withholding_count") or 0) < slot:
+                doc.custom_withholding_count = str(slot)
+            return
+
+    frappe.throw(
+        _(
+            "Withholding category <b>{0}</b> is applicable for services only and cannot "
+            "remain in the standard field — all custom withholding fields are occupied. "
+            "Please free up one custom field to make room."
+        ).format(std_cat),
+        title=_("Withholding Category Conflict"),
+    )
+
+
+# ---------------------------------------------------------------------------
 # Item validation
 # ---------------------------------------------------------------------------
 
@@ -187,13 +241,109 @@ def sync_tds_from_item_tax_template(doc, method=None):
         row.apply_tds = template_tds_map.get(template, 0) if template else 0
 
 
+def apply_additional_withholding_rows(doc, _method=None):
+    """
+    Ensure tax rows exist for withholding categories that our custom logic owns:
+
+    - custom_withholding_1/2/3 (when apply_multiple_withholding=1): always.
+    - tax_withholding_category when it is service-only: ERPNext bases its
+      calculation on apply_tds items and may produce 0 or skip the row entirely
+      if no items have apply_tds=1; we guarantee the row exists so that
+      recalculate_withholding_tax_amounts can set the correct service-based amount.
+
+    Must run before recalculate_withholding_tax_amounts.
+    """
+    if not doc.get("apply_tds") and not doc.get("apply_multiple_withholding"):
+        return
+
+    cats_to_ensure = []
+
+    # Standard category — only when service-only (ERPNext handles the normal case)
+    std_cat = doc.get("tax_withholding_category")
+    if std_cat and _is_service_only_category(std_cat):
+        cats_to_ensure.append(std_cat)
+
+    # Custom multiple-withholding categories
+    if doc.get("apply_multiple_withholding"):
+        seen = {c for c in cats_to_ensure}
+        for f in ("custom_withholding_1", "custom_withholding_2", "custom_withholding_3"):
+            val = doc.get(f)
+            if val and val not in seen:
+                cats_to_ensure.append(val)
+                seen.add(val)
+
+    if not cats_to_ensure:
+        return
+
+    existing_accounts = {t.account_head for t in (doc.taxes or [])}
+
+    all_tds_net = sum(
+        (row.net_amount or 0) for row in (doc.items or []) if cint(row.get("apply_tds"))
+    )
+    service_tds_net = sum(
+        (row.net_amount or 0)
+        for row in (doc.items or [])
+        if cint(row.get("custom_is_service_item"))
+    )
+
+    for cat_name in cats_to_ensure:
+        wh_accounts = frappe.get_all(
+            "Tax Withholding Account",
+            filters={"parent": cat_name, "company": doc.company},
+            fields=["account"],
+            limit=1,
+        )
+        if not wh_accounts or not wh_accounts[0].account:
+            frappe.throw(
+                _(
+                    "No withholding account configured for <b>{0}</b> for company <b>{1}</b>. "
+                    "Please set it up in the Tax Withholding Category."
+                ).format(cat_name, doc.company),
+                title=_("Withholding Account Missing"),
+            )
+
+        account = wh_accounts[0].account
+        if account in existing_accounts:
+            continue
+
+        rate = _get_withholding_rate_for_date(cat_name, doc.posting_date) or 0
+        is_service_only = _is_service_only_category(cat_name)
+        base = service_tds_net if is_service_only else all_tds_net
+
+        if is_service_only and base == 0:
+            continue
+
+        tax_amount = round(base * rate / 100, 2)
+        base_tax_amount = round(tax_amount * (doc.conversion_rate or 1), 2)
+
+        row = {
+            "charge_type": "Actual",
+            "add_deduct_tax": "Deduct",
+            "category": "Total",
+            "account_head": account,
+            "description": "Withholding Tax - {}".format(cat_name),
+            "rate": rate,
+            "tax_amount": tax_amount,
+            "tax_amount_after_discount_amount": tax_amount,
+            "base_tax_amount": base_tax_amount,
+            "base_tax_amount_after_discount_amount": base_tax_amount,
+        }
+
+        for dim in frappe.get_all("Accounting Dimension", fields=["fieldname"]):
+            if doc.get(dim.fieldname):
+                row[dim.fieldname] = doc.get(dim.fieldname)
+
+        doc.append("taxes", row)
+        existing_accounts.add(account)
+
+
 def recalculate_withholding_tax_amounts(doc, _method=None):
     """
     Recalculate tax_amount on every withholding row from the current item totals.
 
     Service-only categories (custom_applicable_for_services = 1):
-        base = net_amount sum for items where apply_tds=1 AND custom_is_service_item=1
-        If base = 0 (no qualifying service items), the row is REMOVED.
+        base = net_amount sum for items where custom_is_service_item=1 (apply_tds not required)
+        If base = 0 (no service items), the row is REMOVED.
 
     All-item categories:
         base = net_amount sum for items where apply_tds=1
@@ -217,7 +367,7 @@ def recalculate_withholding_tax_amounts(doc, _method=None):
     service_tds_net = sum(
         (row.net_amount or 0)
         for row in (doc.items or [])
-        if cint(row.get("apply_tds")) and cint(row.get("custom_is_service_item"))
+        if cint(row.get("custom_is_service_item"))
     )
 
     new_taxes = []
@@ -274,12 +424,13 @@ def set_gross_amount(doc, _method=None):
 def validate_service_withholding_category(doc, _method=None):
     """
     Inform (non-blocking) if a service-only withholding category is active
-    but no item has both apply_tds = 1 and custom_is_service_item = 1.
+    but no item is marked as a service item.
 
-    Service-only categories base withholding on service items with apply_tds = 1.
+    Service-only categories base withholding on all service items (custom_is_service_item=1).
+    The item's apply_tds flag is not required — the category's service-only flag is sufficient.
     Categories without the service-only flag base withholding on all apply_tds items.
     """
-    if not doc.get("apply_tds"):
+    if not doc.get("apply_tds") and not doc.get("apply_multiple_withholding"):
         return
 
     categories = _get_active_withholding_categories(doc)
@@ -288,7 +439,7 @@ def validate_service_withholding_category(doc, _method=None):
         return
 
     has_qualifying_item = any(
-        cint(row.get("apply_tds")) and cint(row.get("custom_is_service_item"))
+        cint(row.get("custom_is_service_item"))
         for row in (doc.items or [])
     )
 

@@ -173,6 +173,17 @@ def get_columns():
 # Resolve withholding accounts via tax_report_type tag
 # ---------------------------------------------------------------------------
 
+def _get_category_for_account(account, company):
+    """Return the Tax Withholding Category name that owns the given account."""
+    rows = frappe.get_all(
+        "Tax Withholding Account",
+        filters={"account": account, "company": company},
+        fields=["parent"],
+        limit=1,
+    )
+    return rows[0].parent if rows else ""
+
+
 def get_withholding_accounts(company, report_types=("WHTAX", "WHVAT")):
     """
     Return { account_name: tax_report_type } for all accounts tagged as
@@ -267,7 +278,7 @@ def get_data(filters):
 
     sql = """
         SELECT
-            COALESCE(wtp.name,
+            COALESCE(wtm.name,
                 CONCAT('temp_', pi.name, '_', pit.account_head)
             )                                               AS name,
             pi.name                                         AS invoice_number,
@@ -285,12 +296,12 @@ def get_data(filters):
             pit.base_tax_amount_after_discount_amount       AS withheld_amount,
             pit.tax_amount                                  AS withheld_amount_transaction,
             pit.rate                                        AS tax_rate,
-            wtp.name                                        AS wtp_name,
-            wtp.payment_status,
-            wtp.payment_date,
-            wtp.prn_number,
-            wtp.journal_entry,
-            COALESCE(wtp.custom_suggestion, 0)              AS suggest_payment
+            wtm.name                                        AS wtp_name,
+            wtm.payment_status,
+            wtm.payment_date,
+            wtm.prn_number,
+            wtm.journal_entry,
+            COALESCE(wtm.suggested_for_payment, 0)          AS suggest_payment
         FROM `tabPurchase Invoice` pi
         JOIN `tabPurchase Taxes and Charges` pit
             ON  pit.parent      = pi.name
@@ -298,9 +309,9 @@ def get_data(filters):
             AND pit.tax_amount  > 0
         LEFT JOIN `tabSupplier` sup
             ON sup.name = pi.supplier
-        LEFT JOIN `tabWithholding Tax Payment` wtp
-            ON  wtp.purchase_invoice    = pi.name
-            AND wtp.withholding_account = pit.account_head
+        LEFT JOIN `tabWithholding Tax Management` wtm
+            ON  wtm.purchase_invoice    = pi.name
+            AND wtm.withholding_account = pit.account_head
         WHERE pi.docstatus = 1
         {conditions}
         ORDER BY pi.bill_date DESC, pi.name DESC
@@ -394,13 +405,13 @@ def build_conditions(filters):
 @frappe.whitelist()
 def update_suggestion_flag(wtp_name, value):
     if not wtp_name:
-        frappe.throw(_("Withholding Tax Payment name is required"))
+        frappe.throw(_("Withholding Tax Management name is required"))
     try:
-        doc = frappe.get_doc("Withholding Tax Payment", wtp_name)
-        doc.custom_suggestion = int(value)
+        doc = frappe.get_doc("Withholding Tax Management", wtp_name)
+        doc.suggested_for_payment = int(value)
         doc.save(ignore_permissions=False)
         frappe.db.commit()
-        return {"status": "success", "wtp_name": wtp_name, "value": int(value)}
+        return {"status": "success", "wtm_name": wtp_name, "value": int(value)}
     except frappe.DoesNotExistError:
         frappe.throw(_("Record not found: {0}").format(wtp_name))
     except Exception as e:
@@ -496,19 +507,21 @@ def _create_or_update_wtp(row_data, journal_entry):
     if not invoice_number or not withholding_account:
         return
 
-    existing = frappe.db.exists("Withholding Tax Payment", {
+    existing = frappe.db.exists("Withholding Tax Management", {
         "purchase_invoice":   invoice_number,
         "withholding_account": withholding_account,
     })
 
     if existing:
-        wtp = frappe.get_doc("Withholding Tax Payment", existing)
+        wtp = frappe.get_doc("Withholding Tax Management", existing)
     else:
-        wtp = frappe.new_doc("Withholding Tax Payment")
-        wtp.purchase_invoice    = invoice_number
-        wtp.withholding_account = withholding_account
-        wtp.supplier            = row_data.get("supplier")
-        wtp.withheld_amount     = flt(row_data.get("withheld_amount", 0))
+        wtp = frappe.new_doc("Withholding Tax Management")
+        wtp.purchase_invoice      = invoice_number
+        wtp.withholding_account   = withholding_account
+        wtp.supplier              = row_data.get("supplier")
+        wtp.withheld_amount       = flt(row_data.get("withheld_amount", 0))
+        pi_company = frappe.db.get_value("Purchase Invoice", invoice_number, "company") or ""
+        wtp.withholding_category  = _get_category_for_account(withholding_account, pi_company)
 
     wtp.payment_status = "Paid"
     wtp.payment_date   = nowdate()
@@ -532,7 +545,7 @@ def batch_update_prn_numbers(prn_updates):
             prn_number = (upd.get("prn_number") or "").strip()
             if not wtp_name or not prn_number:
                 continue
-            wtp = frappe.get_doc("Withholding Tax Payment", wtp_name)
+            wtp = frappe.get_doc("Withholding Tax Management", wtp_name)
             if wtp.payment_status != "Paid":
                 errors.append("{0} is not Paid".format(wtp_name))
                 continue
@@ -560,7 +573,7 @@ def batch_update_prn_numbers(prn_updates):
 def create_unpaid_wtp_on_submit(doc, method=None):
     """
     Called from hooks.py on Purchase Invoice submit.
-    Creates a Withholding Tax Payment record for each withholding line
+    Creates a Withholding Tax Management record for each withholding line
     using tagged accounts instead of LIKE patterns.
     """
     company = doc.company
@@ -580,18 +593,19 @@ def create_unpaid_wtp_on_submit(doc, method=None):
     )
 
     for line in lines:
-        if frappe.db.exists("Withholding Tax Payment", {
+        if frappe.db.exists("Withholding Tax Management", {
             "purchase_invoice":   doc.name,
             "withholding_account": line.account_head,
         }):
             continue
         try:
-            wtp = frappe.new_doc("Withholding Tax Payment")
-            wtp.purchase_invoice    = doc.name
-            wtp.withholding_account = line.account_head
-            wtp.supplier            = doc.supplier
-            wtp.withheld_amount     = flt(line.base_tax_amount_after_discount_amount, 2)
-            wtp.payment_status      = "Unpaid"
+            wtp = frappe.new_doc("Withholding Tax Management")
+            wtp.purchase_invoice      = doc.name
+            wtp.withholding_account   = line.account_head
+            wtp.supplier              = doc.supplier
+            wtp.withheld_amount       = flt(line.base_tax_amount_after_discount_amount, 2)
+            wtp.payment_status        = "Unpaid"
+            wtp.withholding_category  = _get_category_for_account(line.account_head, company)
             wtp.insert(ignore_permissions=True)
         except Exception as e:
             frappe.log_error(
@@ -601,16 +615,53 @@ def create_unpaid_wtp_on_submit(doc, method=None):
 
 
 def cancel_wtp_on_invoice_cancel(doc, method=None):
-    unpaid = frappe.get_all(
-        "Withholding Tax Payment",
-        filters={"purchase_invoice": doc.name, "payment_status": "Unpaid"},
+    """
+    When a Purchase Invoice is cancelled:
+    1. Cancel any submitted Withholding Payment Entries that contain the
+       invoice's WTM records (reverses the KRA remittance JE).
+    2. Delete all linked WTM records regardless of payment status.
+    """
+    all_wtm = frappe.get_all(
+        "Withholding Tax Management",
+        filters={"purchase_invoice": doc.name},
         fields=["name"],
     )
-    for r in unpaid:
+    if not all_wtm:
+        return
+
+    wtm_names = [r.name for r in all_wtm]
+
+    # Cancel any submitted WPEs that reference these WTM records (deduplicated)
+    wpe_rows = frappe.get_all(
+        "WPE Withholding Entry",
+        filters={"wtm_reference": ["in", wtm_names]},
+        fields=["parent"],
+    )
+    cancelled_wpes = set()
+    for row in wpe_rows:
+        wpe_name = row.parent
+        if wpe_name in cancelled_wpes:
+            continue
+        try:
+            wpe = frappe.get_doc("Withholding Payment Entry", wpe_name)
+            if wpe.docstatus == 1:
+                wpe.cancel()
+            cancelled_wpes.add(wpe_name)
+        except Exception:
+            frappe.log_error(
+                frappe.get_traceback(),
+                "Failed to cancel WPE on invoice cancel: {}".format(wpe_name),
+            )
+
+    # Delete all WTM records for this invoice
+    for name in wtm_names:
         try:
             frappe.delete_doc(
-                "Withholding Tax Payment", r.name,
+                "Withholding Tax Management", name,
                 ignore_permissions=True, force=True,
             )
-        except Exception as e:
-            frappe.log_error(frappe.get_traceback(), "Failed to delete WTP on cancel")
+        except Exception:
+            frappe.log_error(
+                frappe.get_traceback(),
+                "Failed to delete WTM on cancel: {}".format(name),
+            )

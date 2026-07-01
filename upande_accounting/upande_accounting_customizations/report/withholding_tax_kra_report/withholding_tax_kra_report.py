@@ -5,21 +5,19 @@
 
 
 """
-
-Produces a KRA-compatible withholding tax filing summary with columns:
+Produces a KRA-compatible withholding tax (WHTAX) filing summary with columns:
   Nature of Transaction | Country | Residential Status | Date of Payment |
   PIN | Supplier Name | Invoice Number | Email Address |
   Gross Amount | Rate | Tax Amount
 
-Covers both WHTAX and WHVAT (user selects via filter).
 All submitted invoices with a withholding tax line are included (paid and unpaid).
-Payment date is shown from the linked Withholding Tax Payment record (null if unpaid).
+Payment date is shown from the linked Withholding Tax Management record (null if unpaid).
 
-WHTAX: gross_amount = base_tax_withholding_net_total, tax_amount = base_tax_amount_after_discount_amount
-WHVAT (VAT3): gross_amount = base_net_total, tax_amount = base_tax_amount
-
-Accounts resolved via is_tax_report_account + tax_report_type tags.
-Nature of Transaction resolved from Tax Withholding Category custom field.
+Accounts resolved via is_tax_report_account + tax_report_type = "Withholding Tax".
+Nature of Transaction resolved per tax row via:
+  pit.account_head → tabTax Withholding Account → tabTax Withholding Category.nature_of_transaction
+  This handles both the standard tax_withholding_category field and custom_withholding_1/2/3.
+Gross amount per row = base_tax_amount / rate × 100 (accurate per-row basis).
 Residential Status derived from supplier country (Kenya = Resident, else Non Resident).
 """
 
@@ -34,7 +32,17 @@ def execute(filters=None):
     validate_filters(filters)
     columns = get_columns()
     data    = get_data(filters)
-    return columns, data
+    message = None
+    if filters.get("paid_only", 1):
+        message = (
+            '<div style="padding:8px 12px; background:#e8f4fd; border-left:4px solid #2196f3; '
+            'border-radius:3px; color:#1a5276;">'
+            '<b>Paid Invoices Only</b> &mdash; This report is showing only fully paid invoices '
+            'that have withholding tax. Uncheck <em>Paid Invoices Only</em> to include all '
+            'submitted invoices regardless of payment status.'
+            '</div>'
+        )
+    return columns, data, message
 
 
 # ---------------------------------------------------------------------------
@@ -46,8 +54,6 @@ def validate_filters(filters):
         frappe.throw(_("Please select a Company."))
     if not filters.get("from_date") or not filters.get("to_date"):
         frappe.throw(_("Please set both From Date and To Date."))
-    if not filters.get("withholding_type"):
-        frappe.throw(_("Please select a Withholding Type (WHTAX or WHVAT)."))
 
 
 # ---------------------------------------------------------------------------
@@ -130,28 +136,20 @@ def get_columns():
 # Account resolution (shared with register)
 # ---------------------------------------------------------------------------
 
-def get_withholding_accounts(company, report_type):
+def get_withholding_accounts(company):
+    # Accept both the new "Withholding Tax" label and the legacy "WHTAX" value
+    # so existing accounts don't need to be manually updated.
     sql = """
         SELECT name
         FROM   `tabAccount`
-        WHERE  account_type         = 'Tax'
-          AND  is_tax_report_account = 1
-          AND  tax_report_type       = %s
+        WHERE  account_type          = 'Tax'
+          AND  is_tax_report_account  = 1
+          AND  tax_report_type        IN ('Withholding Tax', 'WHTAX')
           {company_cond}
     """.format(company_cond="AND company = %s" if company else "")
-    params = [report_type]
-    if company:
-        params.append(company)
-    rows = frappe.db.sql(sql, tuple(params), as_dict=True)
+    params = (company,) if company else ()
+    rows = frappe.db.sql(sql, params, as_dict=True)
     return [r.name for r in rows]
-
-
-def get_nature_map():
-    rows = frappe.get_all(
-        "Tax Withholding Category",
-        fields=["name", "nature_of_transaction"],
-    )
-    return {r.name: r.nature_of_transaction or "" for r in rows}
 
 
 # ---------------------------------------------------------------------------
@@ -159,92 +157,86 @@ def get_nature_map():
 # ---------------------------------------------------------------------------
 
 def get_data(filters):
-    company      = filters.get("company")
-    report_type  = filters["withholding_type"]    # WHTAX or WHVAT
+    company = filters.get("company")
 
-    accounts = get_withholding_accounts(company, report_type)
+    accounts = get_withholding_accounts(company)
     if not accounts:
         frappe.msgprint(
-            _("No accounts tagged as {0}. Tag accounts via Account → Include in Tax Report → {0}.").format(report_type),
+            _("No accounts tagged as Withholding Tax. "
+              "Tag accounts via Account → Include in Tax Report → Withholding Tax."),
             indicator="orange",
         )
         return []
 
-    # Optional single-account filter
     if filters.get("withholding_account"):
         acct = filters["withholding_account"]
         if acct in accounts:
             accounts = [acct]
         else:
-            frappe.msgprint(_("Selected account is not tagged as {0}.").format(report_type), indicator="orange")
+            frappe.msgprint(_("Selected account is not tagged as Withholding Tax."), indicator="orange")
             return []
 
-    nature_map   = get_nature_map()
-    acc_ph       = ", ".join(["%s"] * len(accounts))
+    acc_ph = ", ".join(["%s"] * len(accounts))
     conditions, params = build_conditions(filters)
 
     sql = """
         SELECT
             pi.name                                         AS invoice_number,
             pi.bill_no,
-            pi.bill_date,
             pi.posting_date,
             pi.supplier,
             pi.supplier_name,
-            pi.tax_withholding_category,
-            pi.base_tax_withholding_net_total               AS gross_amount_whtax,
-            pi.base_net_total                               AS gross_amount_whvat,
-            pi.currency                                     AS transaction_currency,
-            pi.conversion_rate                              AS exchange_rate,
             sup.tax_id,
             sup.country,
             (
                 SELECT c.email_id
                 FROM   `tabContact` c
                 JOIN   `tabDynamic Link` dl
-                       ON  dl.parent     = c.name
+                       ON  dl.parent       = c.name
                        AND dl.link_doctype = 'Supplier'
-                       AND dl.link_name   = pi.supplier
+                       AND dl.link_name    = pi.supplier
                 WHERE  c.email_id IS NOT NULL
                   AND  c.email_id != ''
                 ORDER BY c.is_primary_contact DESC, c.creation ASC
                 LIMIT  1
             )                                               AS email,
             pit.account_head                                AS withholding_account,
-            pit.base_tax_amount_after_discount_amount       AS tax_amount_whtax,
-            pit.base_tax_amount                             AS tax_amount_whvat,
+            pit.base_tax_amount_after_discount_amount       AS tax_amount,
             pit.rate                                        AS tax_rate,
-            wtp.payment_date,
-            wtp.prn_number
+            CASE
+                WHEN pit.rate > 0
+                THEN ROUND(pit.base_tax_amount_after_discount_amount * 100 / pit.rate, 2)
+                ELSE pi.base_tax_withholding_net_total
+            END                                             AS gross_amount,
+            twcat.nature_of_transaction,
+            wtm.payment_date,
+            wtm.prn_number
         FROM `tabPurchase Invoice` pi
         JOIN `tabPurchase Taxes and Charges` pit
-            ON  pit.parent      = pi.name
+            ON  pit.parent       = pi.name
             AND pit.account_head IN ({acc_ph})
-            AND pit.tax_amount  > 0
-        LEFT JOIN `tabWithholding Tax Payment` wtp
-            ON  wtp.purchase_invoice    = pi.name
-            AND wtp.withholding_account = pit.account_head
+            AND pit.tax_amount   > 0
+        LEFT JOIN `tabTax Withholding Account` twa
+            ON  twa.account  = pit.account_head
+            AND twa.company  = pi.company
+        LEFT JOIN `tabTax Withholding Category` twcat
+            ON  twcat.name   = twa.parent
+        LEFT JOIN `tabWithholding Tax Management` wtm
+            ON  wtm.purchase_invoice    = pi.name
+            AND wtm.withholding_account = pit.account_head
         LEFT JOIN `tabSupplier` sup ON sup.name = pi.supplier
         WHERE pi.docstatus = 1
         {conditions}
         ORDER BY pi.posting_date ASC, pi.supplier ASC
     """.format(acc_ph=acc_ph, conditions=conditions)
 
-    all_params = accounts + params
-    rows = frappe.db.sql(sql, tuple(all_params), as_dict=True)
-
-    is_whvat = (report_type == "WHVAT")
+    rows = frappe.db.sql(sql, tuple(accounts + params), as_dict=True)
 
     result = []
     for row in rows:
         country = (row.get("country") or "").strip()
-        twc     = row.get("tax_withholding_category") or ""
-
-        gross_amount = flt(row.get("gross_amount_whvat") if is_whvat else row.get("gross_amount_whtax"))
-        tax_amount   = flt(row.get("tax_amount_whvat") if is_whvat else row.get("tax_amount_whtax"))
-
         result.append({
-            "nature_of_transaction": nature_map.get(twc, "Other Income"),
+            "nature_of_transaction": row.get("nature_of_transaction") or "Other Income",
             "country":               country or "Kenya",
             "residential_status":    "Resident" if country.lower() == "kenya" else "Non Resident",
             "payment_date":          row.get("payment_date"),
@@ -252,9 +244,9 @@ def get_data(filters):
             "supplier_name":         row.get("supplier_name") or row.get("supplier") or "",
             "bill_no":               row.get("bill_no") or row.get("invoice_number") or "",
             "email":                 row.get("email") or "",
-            "gross_amount":          gross_amount,
+            "gross_amount":          flt(row.get("gross_amount")),
             "tax_rate":              flt(row.get("tax_rate"), 2),
-            "tax_amount":            tax_amount,
+            "tax_amount":            flt(row.get("tax_amount")),
             "_invoice_number":       row.get("invoice_number"),
             "_prn_number":           row.get("prn_number"),
         })
@@ -285,6 +277,9 @@ def build_conditions(filters):
     if filters.get("supplier"):
         conditions.append("pi.supplier = %s")
         params.append(filters["supplier"])
+
+    if filters.get("paid_only", 1):
+        conditions.append("pi.status = 'Paid'")
 
     cond_str = ("AND " + " AND ".join(conditions)) if conditions else ""
     return cond_str, params

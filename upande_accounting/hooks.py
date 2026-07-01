@@ -21,17 +21,18 @@ app_license = "mit"
 # 	}
 # ]
 fixtures = [
-           {
-               "dt": "Custom Field",
-               "filters": [
-                   ["dt", "in", ["Account"]],
-                   ["fieldname", "in", [
-                       "is_tax_report_account",
-                       "tax_report_type",
-                   ]],
-               ],
-           },
-       ]
+    {
+        "dt": "Custom Field",
+        "filters": [
+            ["dt", "in", ["Account", "Payment Entry Reference"]],
+            ["fieldname", "in", [
+                "is_tax_report_account",
+                "tax_report_type",
+                "custom_cu_invoice_no",
+            ]],
+        ],
+    },
+]
 doc_events = {
     "Item": {
         "validate": "upande_accounting.utils.validate_item_type",
@@ -72,7 +73,9 @@ doc_events = {
 # include js in doctype views
 doctype_js = {
     "Item": "public/js/item.js",
+    "Payment Entry": "public/js/payment_entry.js",
     "Purchase Invoice": "public/js/purchase_invoice.js",
+    "Withholding Tax Management": "public/js/withholding_tax_management.js",
 }
 # doctype_list_js = {"doctype" : "public/js/doctype_list.js"}
 # doctype_tree_js = {"doctype" : "public/js/doctype_tree.js"}

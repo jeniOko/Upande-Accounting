@@ -24,18 +24,6 @@ frappe.query_reports["Withholding Tax KRA Report"] = {
             reqd: 1,
         },
         {
-            // WHTAX or WHVAT — required, determines which accounts to query
-            fieldname: "withholding_type",
-            label: __("Withholding Type"),
-            fieldtype: "Select",
-            options: "\nWHTAX\nWHVAT",
-            reqd: 1,
-            on_change: function () {
-                // Reset account filter when type changes
-                frappe.query_report.set_filter_value("withholding_account", "");
-            },
-        },
-        {
             fieldname: "from_date",
             label: __("From Date"),
             fieldtype: "Date",
@@ -50,15 +38,19 @@ frappe.query_reports["Withholding Tax KRA Report"] = {
             reqd: 1,
         },
         {
+            fieldname: "paid_only",
+            label: __("Paid Invoices Only"),
+            fieldtype: "Check",
+            default: 1,
+        },
+        {
             fieldname: "withholding_account",
             label: __("Withholding Account"),
             fieldtype: "Link",
             options: "Account",
             get_query: function () {
                 const company = frappe.query_report.get_filter_value("company");
-                const wh_type = frappe.query_report.get_filter_value("withholding_type");
-                const filters = { account_type: "Tax", is_tax_report_account: 1 };
-                if (wh_type) filters["tax_report_type"] = wh_type;
+                const filters = { account_type: "Tax", is_tax_report_account: 1, tax_report_type: "Withholding Tax" };
                 if (company) filters["company"] = company;
                 return { filters };
             },
@@ -154,10 +146,9 @@ function download_kra_report(report, format) {
         })
     );
 
-    const wh_type   = frappe.query_report.get_filter_value("withholding_type") || "WHTAX";
     const from_date = frappe.query_report.get_filter_value("from_date") || "";
     const to_date   = frappe.query_report.get_filter_value("to_date")   || "";
-    const filename  = `${wh_type}_KRA_${from_date}_to_${to_date}`;
+    const filename  = `Withholding_Tax_KRA_${from_date}_to_${to_date}`;
 
     if (format === "csv") {
         download_csv(headers, rows, filename);

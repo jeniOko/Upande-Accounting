@@ -24,11 +24,13 @@ fixtures = [
     {
         "dt": "Custom Field",
         "filters": [
-            ["dt", "in", ["Account", "Payment Entry Reference"]],
+            ["dt", "in", ["Account", "Payment Entry Reference", "Tax Withholding Category"]],
             ["fieldname", "in", [
                 "is_tax_report_account",
                 "tax_report_type",
                 "custom_cu_invoice_no",
+                "custom_applicable_for_services",
+                "nature_of_transaction",
             ]],
         ],
     },

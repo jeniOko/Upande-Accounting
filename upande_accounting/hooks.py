@@ -40,7 +40,20 @@ doc_events = {
         "validate": "upande_accounting.utils.validate_item_type",
     },
     "Purchase Invoice": {
-        "before_save": "upande_accounting.utils.sync_tds_from_item_tax_template",
+        "before_validate": [
+            "upande_accounting.utils.normalize_withholding_categories",
+            "upande_accounting.utils.sync_is_service_item_on_pi",
+            "upande_accounting.utils.sync_tds_from_item_tax_template",
+            "upande_accounting.utils.remove_orphaned_withholding_tax_rows",
+            "upande_accounting.utils.apply_additional_withholding_rows",
+            "upande_accounting.utils.recalculate_withholding_tax_amounts",
+        ],
+        "validate": [
+            "upande_accounting.utils.validate_service_withholding_category",
+            "upande_accounting.utils.set_withholding_tax_rates",
+            "upande_accounting.utils.validate_withholding_in_taxes_table",
+        ],
+        "before_save": "upande_accounting.utils.set_gross_amount",
         # "on_submit": "upande_accounting.withholding_tax_register.create_unpaid_wtp_on_submit",
         # "on_cancel": "upande_accounting.withholding_tax_register.cancel_wtp_on_invoice_cancel",
     },
@@ -49,7 +62,13 @@ doc_events = {
             "upande_accounting.utils.sync_is_service_item_on_pi",
             "upande_accounting.utils.sync_tds_from_item_tax_template",
         ],
-    }
+    },
+    "Payment Entry": {
+        "on_submit": "upande_accounting.withholding_tax_management.on_payment_entry_submit",
+        "on_update_after_submit": "upande_accounting.withholding_tax_management.on_payment_entry_update_after_submit",
+        "on_cancel": "upande_accounting.withholding_tax_management.on_payment_entry_cancel",
+        "on_trash": "upande_accounting.withholding_tax_management.on_payment_entry_trash",
+    },
 }
 # Includes in <head>
 # ------------------

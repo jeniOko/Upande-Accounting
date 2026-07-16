@@ -35,7 +35,7 @@ function toggleAgeingRows(show) {
 }
 
 
-frappe.query_reports["Customer Statement Of Account"] = {
+frappe.query_reports["Supplier Statement Of Account"] = {
 
     onload: function (report) {
         // Top-right button: back to summary with current dates
@@ -46,7 +46,7 @@ frappe.query_reports["Customer Statement Of Account"] = {
                 to_date:       frappe.query_report.get_filter_value("to_date"),
                 include_draft: frappe.query_report.get_filter_value("include_draft") || 0,
             };
-            frappe.set_route("query-report", "Customer Statement Summary");
+            frappe.set_route("query-report", "Supplier Statement Summary");
         });
     },
 
@@ -60,15 +60,15 @@ frappe.query_reports["Customer Statement Of Account"] = {
             reqd: 1,
         },
         {
-            fieldname: "customer",
-            label: __("Customer"),
+            fieldname: "supplier",
+            label: __("Supplier"),
             fieldtype: "Link",
-            options: "Customer",
+            options: "Supplier",
             reqd: 1,
             on_change: function () {
-                const customer = frappe.query_report.get_filter_value("customer");
-                if (!customer) return;
-                frappe.db.get_value("Customer", customer, "default_currency", (r) => {
+                const supplier = frappe.query_report.get_filter_value("supplier");
+                if (!supplier) return;
+                frappe.db.get_value("Supplier", supplier, "default_currency", (r) => {
                     if (r && r.default_currency) {
                         frappe.query_report.set_filter_value("currency", r.default_currency);
                     }
@@ -98,7 +98,7 @@ frappe.query_reports["Customer Statement Of Account"] = {
         },
         {
             fieldname: "include_draft",
-            label: __("Include Draft Invoices"),
+            label: __("Include Draft Bills"),
             fieldtype: "Check",
             default: 0,
         },
@@ -134,22 +134,22 @@ frappe.query_reports["Customer Statement Of Account"] = {
             value = `<span style="color:#888; font-size:0.85em; font-weight:600; letter-spacing:0.04em; text-transform:uppercase;">${value || ""}</span>`;
         }
 
-        // Document type labels (normal invoice rows)
+        // Document type labels (normal bill rows)
         if (column.fieldname === "display_type" && !data.is_ageing && !data.is_separator && !data.is_opening && !data.is_closing) {
-            if (data.display_type === "Credit Note") {
-                value = `<span style="font-weight:300;">Credit Note</span>`;
-            } else if (data.display_type === "Receipt") {
-                value = `<span style="font-weight:300;">Receipt</span>`;
-            } else if (data.display_type === "Invoice") {
-                value = `<span style="font-weight:300;">Invoice</span>`;
+            if (data.display_type === "Debit Note") {
+                value = `<span style="font-weight:300;">Debit Note</span>`;
+            } else if (data.display_type === "Payment") {
+                value = `<span style="font-weight:300;">Payment</span>`;
+            } else if (data.display_type === "Bill") {
+                value = `<span style="font-weight:300;">Bill</span>`;
             }
         }
 
-        // Balance colour on invoice rows — uses ageing_level computed in Python
+        // Balance colour on bill rows — uses ageing_level computed in Python
         // against to_date, so "overdue" reflects the report date, not today.
         if (
             column.fieldname === "balance" &&
-            data.voucher_type === "Sales Invoice" &&
+            data.voucher_type === "Purchase Invoice" &&
             flt(data.balance) > 0 &&
             data.ageing_level !== null && data.ageing_level !== undefined
         ) {
@@ -159,7 +159,7 @@ frappe.query_reports["Customer Statement Of Account"] = {
             value = `<span style="color:${colour}; font-weight:500;">${value}</span>`;
         }
 
-        // Draft invoice rows — orange italic
+        // Draft bill rows — orange italic
         if (data.is_draft) {
             value = `<span style="color:#e67e22; font-style:italic;">${value || ""}</span>`;
         }

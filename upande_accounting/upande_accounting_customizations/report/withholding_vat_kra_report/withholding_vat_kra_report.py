@@ -10,14 +10,25 @@ Only includes Purchase Invoices where the linked Withholding Tax Management
 record has payment_status = 'Paid', meaning the withheld VAT has already
 been remitted to KRA.
 
-Column order matches KRA upload format:
+The From Date / To Date filters apply to wtm.payment_date (the remittance
+date), not the invoice's posting/bill date — this is a filing report, so the
+relevant period is when the withholding was paid over to KRA.
+
+On-screen column order:
   PIN | Invoice Number | Invoice Date | Taxable Amount |
   WHT VAT Rate (%) | WHT VAT Amount | Payment Date | PRN Number
+
+The CSV/XLSX download only goes up to Taxable Amount (PIN | Supplier Name |
+Invoice Number | Invoice Date | Taxable Amount) — Rate/Tax Amount/Payment Date
+are on-screen only, for verification, not part of the KRA upload file.
 
 Accounts resolved via is_tax_report_account + tax_report_type IN
 ('Withholding VAT', 'WHVAT') on the Account master.
 
-Taxable Amount = base_tax_amount / (rate / 100) per invoice tax row.
+Taxable Amount = Purchase Invoice.gross_amount (net_total + taxes_and_charges_added,
+i.e. all tax rows with add_deduct_tax = "Add") — this app's own pre-existing
+definition, set on before_save via upande_accounting.utils.set_gross_amount. It is a
+whole-invoice figure, not apportioned per withholding row.
 """
 
 import frappe
@@ -180,11 +191,7 @@ def get_data(filters):
             pit.account_head                                    AS withholding_account,
             pit.base_tax_amount_after_discount_amount           AS tax_amount,
             pit.rate                                            AS tax_rate,
-            CASE
-                WHEN pit.rate > 0
-                THEN ROUND(pit.base_tax_amount_after_discount_amount * 100.0 / pit.rate, 2)
-                ELSE pi.base_tax_withholding_net_total
-            END                                                 AS taxable_amount,
+            pi.gross_amount                                     AS taxable_amount,
             wtm.payment_date,
             wtm.prn_number,
             wtm.name                                            AS wtm_name
@@ -201,7 +208,7 @@ def get_data(filters):
             ON  sup.name = pi.supplier
         WHERE pi.docstatus = 1
         {conditions}
-        ORDER BY pi.bill_date ASC, pi.supplier ASC
+        ORDER BY wtm.payment_date ASC, pi.supplier ASC
     """.format(acc_ph=acc_ph, conditions=conditions)
 
     rows = frappe.db.sql(sql, tuple(accounts + params), as_dict=True)
@@ -228,6 +235,12 @@ def get_data(filters):
 # ---------------------------------------------------------------------------
 
 def build_conditions(filters):
+    """
+    from_date/to_date filter on wtm.payment_date, not the invoice's own date —
+    this is a KRA remittance filing report (only Paid WTM records are shown at
+    all), so the relevant period is when the withholding was actually paid
+    over to KRA, not when the underlying purchase invoice was raised.
+    """
     conditions = []
     params = []
 
@@ -236,11 +249,11 @@ def build_conditions(filters):
         params.append(filters["company"])
 
     if filters.get("from_date"):
-        conditions.append("pi.posting_date >= %s")
+        conditions.append("wtm.payment_date >= %s")
         params.append(filters["from_date"])
 
     if filters.get("to_date"):
-        conditions.append("pi.posting_date <= %s")
+        conditions.append("wtm.payment_date <= %s")
         params.append(filters["to_date"])
 
     if filters.get("supplier"):
@@ -249,3 +262,40 @@ def build_conditions(filters):
 
     cond_str = ("AND " + " AND ".join(conditions)) if conditions else ""
     return cond_str, params
+
+
+# ---------------------------------------------------------------------------
+# XLSX download — generated server-side (frappe.utils.xlsxutils), same as
+# Frappe's own report Excel export; no client-side XLSX library involved.
+#
+# Column set stops at Taxable Amount (PIN, Supplier Name, Invoice Number,
+# Invoice Date, Taxable Amount) — Rate/Tax Amount/Payment Date are shown on
+# screen for verification but aren't part of the download.
+# ---------------------------------------------------------------------------
+
+def _download_field_map():
+    return (
+        ["PIN", "Supplier Name", "Invoice Number", "Invoice Date", "Taxable Amount (KES)"],
+        ["tax_id", "supplier_name", "bill_no", "bill_date", "taxable_amount"],
+    )
+
+
+@frappe.whitelist()
+def download_xlsx(filters=None):
+    import json
+
+    from frappe.utils.xlsxutils import build_xlsx_response
+
+    if isinstance(filters, str):
+        filters = json.loads(filters)
+    filters = filters or {}
+    validate_filters(filters)
+
+    rows = get_data(filters)
+    headers, field_map = _download_field_map()
+
+    data = [headers] + [[row.get(f) if row.get(f) is not None else "" for f in field_map] for row in rows]
+
+    from_date = filters.get("from_date") or ""
+    to_date = filters.get("to_date") or ""
+    build_xlsx_response(data, "Withholding_VAT_KRA_{0}_to_{1}".format(from_date, to_date))

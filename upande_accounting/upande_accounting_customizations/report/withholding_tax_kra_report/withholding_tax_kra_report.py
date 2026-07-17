@@ -13,11 +13,21 @@ Produces a KRA-compatible withholding tax (WHTAX) filing summary with columns:
 All submitted invoices with a withholding tax line are included (paid and unpaid).
 Payment date is shown from the linked Withholding Tax Management record (null if unpaid).
 
+From Date / To Date filter on wtm.payment_date (the remittance date) where the
+invoice has one; unpaid invoices fall back to the invoice's own posting_date
+so they still appear when Paid Invoices Only is unchecked.
+
 Accounts resolved via is_tax_report_account + tax_report_type = "Withholding Tax".
 Nature of Transaction resolved per tax row via:
   pit.account_head → tabTax Withholding Account → tabTax Withholding Category.nature_of_transaction
-  This handles both the standard tax_withholding_category field and custom_withholding_1/2/3.
-Gross amount per row = base_tax_amount / rate × 100 (accurate per-row basis).
+  This is account-based, not category-field-based, so it works regardless of whether
+  the category came from an item's native tax_withholding_category or from our own
+  additional-withholding item fields.
+Gross Amount = Purchase Invoice.gross_amount (net_total + taxes_and_charges_added,
+i.e. all tax rows with add_deduct_tax = "Add" — this app's own pre-existing definition,
+set on before_save via upande_accounting.utils.set_gross_amount). It is a whole-invoice
+figure, not apportioned per withholding row — every withholding row on the same
+invoice shows the same Gross Amount.
 Residential Status derived from supplier country (Kenya = Resident, else Non Resident).
 """
 
@@ -203,11 +213,7 @@ def get_data(filters):
             pit.account_head                                AS withholding_account,
             pit.base_tax_amount_after_discount_amount       AS tax_amount,
             pit.rate                                        AS tax_rate,
-            CASE
-                WHEN pit.rate > 0
-                THEN ROUND(pit.base_tax_amount_after_discount_amount * 100 / pit.rate, 2)
-                ELSE pi.base_tax_withholding_net_total
-            END                                             AS gross_amount,
+            pi.gross_amount                                 AS gross_amount,
             twcat.nature_of_transaction,
             wtm.payment_date,
             wtm.prn_number
@@ -227,7 +233,7 @@ def get_data(filters):
         LEFT JOIN `tabSupplier` sup ON sup.name = pi.supplier
         WHERE pi.docstatus = 1
         {conditions}
-        ORDER BY pi.posting_date ASC, pi.supplier ASC
+        ORDER BY COALESCE(wtm.payment_date, pi.posting_date) ASC, pi.supplier ASC
     """.format(acc_ph=acc_ph, conditions=conditions)
 
     rows = frappe.db.sql(sql, tuple(accounts + params), as_dict=True)
@@ -259,6 +265,12 @@ def get_data(filters):
 # ---------------------------------------------------------------------------
 
 def build_conditions(filters):
+    """
+    from_date/to_date filter on wtm.payment_date (the remittance date) when
+    the invoice has one; unpaid invoices (wtm.payment_date is NULL, shown when
+    paid_only is unchecked) fall back to the invoice's own posting_date so
+    they aren't silently dropped from every date-filtered result.
+    """
     conditions = []
     params     = []
 
@@ -267,11 +279,11 @@ def build_conditions(filters):
         params.append(filters["company"])
 
     if filters.get("from_date"):
-        conditions.append("pi.posting_date >= %s")
+        conditions.append("COALESCE(wtm.payment_date, pi.posting_date) >= %s")
         params.append(filters["from_date"])
 
     if filters.get("to_date"):
-        conditions.append("pi.posting_date <= %s")
+        conditions.append("COALESCE(wtm.payment_date, pi.posting_date) <= %s")
         params.append(filters["to_date"])
 
     if filters.get("supplier"):
@@ -283,3 +295,41 @@ def build_conditions(filters):
 
     cond_str = ("AND " + " AND ".join(conditions)) if conditions else ""
     return cond_str, params
+
+
+# ---------------------------------------------------------------------------
+# XLSX download — generated server-side (frappe.utils.xlsxutils), same as
+# Frappe's own report Excel export. The client no longer needs a bundled
+# SheetJS/XLSX library, which was never actually available in the desk
+# frontend to begin with.
+# ---------------------------------------------------------------------------
+
+@frappe.whitelist()
+def download_xlsx(filters=None):
+    import json
+
+    from frappe.utils.xlsxutils import build_xlsx_response
+
+    if isinstance(filters, str):
+        filters = json.loads(filters)
+    filters = filters or {}
+    validate_filters(filters)
+
+    rows = get_data(filters)
+
+    headers = [
+        "Nature of Transaction", "Country", "Residential Status", "Date of Payment",
+        "PIN", "Supplier Name", "Invoice Number", "Email Address",
+        "Gross Amount", "Rate", "Tax Amount",
+    ]
+    field_map = [
+        "nature_of_transaction", "country", "residential_status", "payment_date",
+        "tax_id", "supplier_name", "bill_no", "email",
+        "gross_amount", "tax_rate", "tax_amount",
+    ]
+
+    data = [headers] + [[row.get(f) if row.get(f) is not None else "" for f in field_map] for row in rows]
+
+    from_date = filters.get("from_date") or ""
+    to_date = filters.get("to_date") or ""
+    build_xlsx_response(data, "Withholding_Tax_KRA_{0}_to_{1}".format(from_date, to_date))

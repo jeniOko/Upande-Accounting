@@ -16,7 +16,7 @@
  "module": "Upande Accounting Customizations",
  "name": "Withholding Tax Register",
  "owner": "Administrator",
- "prepared_report": 0,
+ "prepared_report": 1,
  "ref_doctype": "Purchase Invoice",
  "report_name": "Withholding Tax Register",
  "report_type": "Script Report",

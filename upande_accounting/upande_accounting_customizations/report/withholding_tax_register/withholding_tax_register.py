@@ -11,8 +11,18 @@ their payment status, PRN numbers, and linked journal entries.
 Account detection uses the is_tax_report_account + tax_report_type fields
 on the Account doctype (tagged as WHTAX or WHVAT) instead of LIKE patterns.
 
-Nature of Transaction is pulled from the Tax Withholding Category linked
-to the supplier via the purchase invoice.
+Tax Withholding Category (and Nature of Transaction) is resolved per tax row
+via account_head → Tax Withholding Account → Tax Withholding Category, not
+from any field on the invoice header — the category can live on an item's
+native tax_withholding_category or on our own additional-withholding item
+fields, so account-based resolution works for both.
+
+Vatable Amount = net_total + taxes_and_charges_added (transaction currency) /
+base_net_total + base_taxes_and_charges_added (KES) — i.e. all tax rows with
+add_deduct_tax = "Add", matching this app's own pre-existing Gross Amount
+definition (upande_accounting.utils.set_gross_amount). It is a whole-invoice
+figure, not apportioned per withholding row — every withholding row on the
+same invoice shows the same Vatable Amount.
 """
 
 import frappe
@@ -186,13 +196,28 @@ def _get_category_for_account(account, company):
 
 def get_withholding_accounts(company, report_types=("WHTAX", "WHVAT")):
     """
-    Return { account_name: tax_report_type } for all accounts tagged as
-    WHTAX or WHVAT via the is_tax_report_account / tax_report_type fields.
+    Return { account_name: normalized_type } for all accounts tagged as WHTAX
+    or WHVAT via is_tax_report_account / tax_report_type.
+
+    Accepts both the human-readable Account Tax Report Type options
+    ('Withholding Tax' / 'Withholding VAT') and the legacy short-code values
+    ('WHTAX' / 'WHVAT') some accounts may still carry, same as the KRA
+    reports — the returned dict always normalizes back to the short code so
+    downstream display/filtering stays consistent regardless of which style
+    a given account was tagged with.
 
     Falls back to an empty dict if no accounts are tagged — the caller
     will warn the user.
     """
-    placeholders = ", ".join(["%s"] * len(report_types))
+    value_groups = {
+        "WHTAX": ("Withholding Tax", "WHTAX"),
+        "WHVAT": ("Withholding VAT", "WHVAT"),
+    }
+    all_values = []
+    for rt in report_types:
+        all_values.extend(value_groups.get(rt, (rt,)))
+
+    placeholders = ", ".join(["%s"] * len(all_values))
     sql = """
         SELECT name, tax_report_type
         FROM   `tabAccount`
@@ -204,12 +229,13 @@ def get_withholding_accounts(company, report_types=("WHTAX", "WHVAT")):
         ph=placeholders,
         company_cond="AND company = %s" if company else "",
     )
-    params = list(report_types)
+    params = all_values
     if company:
         params.append(company)
 
     rows = frappe.db.sql(sql, tuple(params), as_dict=True)
-    return {r.name: r.tax_report_type for r in rows}
+    reverse_map = {v: k for k, values in value_groups.items() for v in values}
+    return {r.name: reverse_map.get(r.tax_report_type, r.tax_report_type) for r in rows}
 
 
 # ---------------------------------------------------------------------------
@@ -285,9 +311,9 @@ def get_data(filters):
             pi.bill_no,
             pi.bill_date,
             pi.supplier,
-            pi.tax_withholding_category,
-            pi.tax_withholding_net_total                    AS base_amount,
-            pi.base_tax_withholding_net_total               AS base_net_amount,
+            twcat.name                                      AS tax_withholding_category,
+            (pi.net_total + pi.taxes_and_charges_added)     AS base_amount,
+            (pi.base_net_total + pi.base_taxes_and_charges_added) AS base_net_amount,
             pi.currency                                     AS transaction_currency,
             pi.conversion_rate                              AS exchange_rate,
             sup.tax_id,
@@ -309,6 +335,11 @@ def get_data(filters):
             AND pit.tax_amount  > 0
         LEFT JOIN `tabSupplier` sup
             ON sup.name = pi.supplier
+        LEFT JOIN `tabTax Withholding Account` twa
+            ON  twa.account = pit.account_head
+            AND twa.company = pi.company
+        LEFT JOIN `tabTax Withholding Category` twcat
+            ON  twcat.name = twa.parent
         LEFT JOIN `tabWithholding Tax Management` wtm
             ON  wtm.purchase_invoice    = pi.name
             AND wtm.withholding_account = pit.account_head

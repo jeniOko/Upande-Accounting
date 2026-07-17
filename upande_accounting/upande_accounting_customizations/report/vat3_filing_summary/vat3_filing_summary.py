@@ -12,7 +12,7 @@ Columns (matching the VAT3 format):
   B  PIN of Supplier       — supplier tax_id
   C  Name of Supplier      — supplier name
   D  Invoice Date          — Purchase Invoice bill_date
-  E  CU Invoice Number     — custom_invoice_number (custom field on PI)
+  E  CU Invoice Number     — custom_control_unit_invoice_number (custom field on PI)
   F  Description of Goods  — items_description (custom field on PI) or
                              first item's item_name as fallback
   G  Customs Entry Number  — custom_entry_number (custom field on PI, relevant for imports)
@@ -176,7 +176,7 @@ def get_data(filters):
             pi.bill_date                    AS bill_date,
 
             -- E: CU Invoice Number (custom field on Purchase Invoice)
-            pi.custom_invoice_number        AS custom_invoice_number,
+            pi.custom_control_unit_invoice_number AS custom_invoice_number,
 
             -- F: Description of Goods
             --    Pulls the first line item's item_name from the items child table.

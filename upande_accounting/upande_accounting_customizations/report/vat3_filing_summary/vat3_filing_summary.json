@@ -16,7 +16,7 @@
  "module": "Upande Accounting Customizations",
  "name": "VAT3 Filing Summary",
  "owner": "Administrator",
- "prepared_report": 0,
+ "prepared_report": 1,
  "ref_doctype": "Purchase Invoice",
  "report_name": "VAT3 Filing Summary",
  "report_type": "Script Report",

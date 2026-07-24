@@ -54,8 +54,8 @@ doc_events = {
             "upande_accounting.utils.validate_withholding_in_taxes_table",
         ],
         "before_save": "upande_accounting.utils.set_gross_amount",
-        # "on_submit": "upande_accounting.withholding_tax_register.create_unpaid_wtp_on_submit",
-        # "on_cancel": "upande_accounting.withholding_tax_register.cancel_wtp_on_invoice_cancel",
+        "on_submit": "upande_accounting.withholding_tax_register.create_unpaid_wtp_on_submit",
+        "on_cancel": "upande_accounting.withholding_tax_register.cancel_wtp_on_invoice_cancel",
     },
     "Purchase Order": {
         "before_validate": [

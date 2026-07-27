@@ -17,12 +17,27 @@ Column order matches KRA upload format:
 Accounts resolved via is_tax_report_account + tax_report_type IN
 ('Withholding VAT', 'WHVAT') on the Account master.
 
-Taxable Amount = base_tax_amount / (rate / 100) per invoice tax row.
+Taxable Amount is resolved per invoice, the same way as the Withholding Tax
+KRA Report: NOT the invoice's overall gross/net total, but the actual
+item-level base the rate was applied to —
+  - Service-only categories → net_amount summed over items flagged
+    custom_is_service_item=1.
+  - All-item categories      → net_amount summed over items flagged
+    apply_tds=1.
+The rate is looked up from the Tax Withholding Category (as of the invoice's
+posting date) rather than trusted from the tax row's own `rate` field, which
+is 0 on older/legacy rows and would otherwise force the taxable amount into
+the fallback "entire invoice" figure below. Only when no category can be
+matched (legacy/manually edited rows with none of the invoice's category
+fields pointing at the account) does the report fall back to reversing the
+base out of tax_amount / rate, and finally to base_tax_withholding_net_total.
 """
 
 import frappe
 from frappe import _
 from frappe.utils import flt
+
+from upande_accounting.utils import _get_withholding_rate_for_date
 
 
 def execute(filters=None):
@@ -174,17 +189,18 @@ def get_data(filters):
             pi.name                                             AS invoice_number,
             pi.bill_no,
             pi.bill_date,
+            pi.company,
             pi.supplier,
             pi.supplier_name,
+            pi.base_tax_withholding_net_total,
+            pi.tax_withholding_category,
+            pi.custom_withholding_1,
+            pi.custom_withholding_2,
+            pi.custom_withholding_3,
             sup.tax_id,
             pit.account_head                                    AS withholding_account,
             pit.base_tax_amount_after_discount_amount           AS tax_amount,
-            pit.rate                                            AS tax_rate,
-            CASE
-                WHEN pit.rate > 0
-                THEN ROUND(pit.base_tax_amount_after_discount_amount * 100.0 / pit.rate, 2)
-                ELSE pi.base_tax_withholding_net_total
-            END                                                 AS taxable_amount,
+            pit.rate                                            AS stored_rate,
             wtm.payment_date,
             wtm.prn_number,
             wtm.name                                            AS wtm_name
@@ -205,22 +221,119 @@ def get_data(filters):
     """.format(acc_ph=acc_ph, conditions=conditions)
 
     rows = frappe.db.sql(sql, tuple(accounts + params), as_dict=True)
+    if not rows:
+        return []
+
+    return _build_result(rows)
+
+
+# ---------------------------------------------------------------------------
+# Per-invoice category / taxable-base resolution — mirrors
+# withholding_tax_kra_report.py. See module docstring for why the rate and
+# taxable amount can't be trusted straight off the tax row.
+# ---------------------------------------------------------------------------
+
+def _build_result(rows):
+    invoice_categories = {}
+    all_categories = set()
+    for row in rows:
+        cats = []
+        for f in ("tax_withholding_category", "custom_withholding_1", "custom_withholding_2", "custom_withholding_3"):
+            val = row.get(f)
+            if val and val not in cats:
+                cats.append(val)
+        invoice_categories[row["invoice_number"]] = cats
+        all_categories.update(cats)
+
+    accounts_by_category = {}
+    category_meta = {}
+    if all_categories:
+        for r in frappe.get_all(
+            "Tax Withholding Account",
+            filters={"parent": ["in", list(all_categories)]},
+            fields=["parent", "account"],
+        ):
+            accounts_by_category.setdefault(r.parent, set()).add(r.account)
+
+        for r in frappe.get_all(
+            "Tax Withholding Category",
+            filters={"name": ["in", list(all_categories)]},
+            fields=["name", "custom_applicable_for_services"],
+        ):
+            category_meta[r.name] = r
+
+    item_bases = _get_invoice_item_bases(list(invoice_categories.keys()))
 
     result = []
     for row in rows:
+        invoice_number = row["invoice_number"]
+
+        matched_category = None
+        for cat in invoice_categories.get(invoice_number, []):
+            if row["withholding_account"] in accounts_by_category.get(cat, set()):
+                matched_category = cat
+                break
+
+        rate = None
+        if matched_category:
+            rate = _get_withholding_rate_for_date(matched_category, row.get("bill_date"))
+        if not rate:
+            rate = flt(row.get("stored_rate"))
+
+        meta = category_meta.get(matched_category)
+        is_service_only = bool(meta and meta.custom_applicable_for_services)
+        bases = item_bases.get(invoice_number, {"all_tds_base_net": 0.0, "service_tds_base_net": 0.0})
+        base = bases["service_tds_base_net"] if is_service_only else bases["all_tds_base_net"]
+
+        if not base:
+            if rate:
+                base = flt(row.get("tax_amount")) * 100 / rate
+            else:
+                base = flt(row.get("base_tax_withholding_net_total"))
+
         result.append({
-            "tax_id":        row.get("tax_id") or "",
-            "supplier_name": row.get("supplier_name") or row.get("supplier") or "",
-            "bill_no":       row.get("bill_no") or row.get("invoice_number") or "",
-            "bill_date":     row.get("bill_date"),
-            "taxable_amount": flt(row.get("taxable_amount")),
-            "tax_rate":       flt(row.get("tax_rate"), 2),
+            "tax_id":         row.get("tax_id") or "",
+            "supplier_name":  row.get("supplier_name") or row.get("supplier") or "",
+            "bill_no":        row.get("bill_no") or invoice_number or "",
+            "bill_date":      row.get("bill_date"),
+            "taxable_amount": flt(base, 2),
+            "tax_rate":       flt(rate, 2),
             "tax_amount":     flt(row.get("tax_amount")),
             "payment_date":   row.get("payment_date"),
-            "invoice_number": row.get("invoice_number"),
+            "invoice_number": invoice_number,
         })
 
     return result
+
+
+def _get_invoice_item_bases(invoice_numbers):
+    """
+    Per-invoice withholding bases, in base (KES) currency — matches the
+    currency of tax_amount above (pit.base_tax_amount_after_discount_amount).
+    """
+    if not invoice_numbers:
+        return {}
+
+    rows = frappe.db.sql(
+        """
+        SELECT
+            parent AS invoice_number,
+            SUM(IF(apply_tds = 1, base_net_amount, 0))              AS all_tds_base_net,
+            SUM(IF(custom_is_service_item = 1, base_net_amount, 0)) AS service_tds_base_net
+        FROM `tabPurchase Invoice Item`
+        WHERE parent IN ({ph})
+        GROUP BY parent
+        """.format(ph=", ".join(["%s"] * len(invoice_numbers))),
+        tuple(invoice_numbers),
+        as_dict=True,
+    )
+    return {
+        r.invoice_number: {
+            "all_tds_base_net":     flt(r.all_tds_base_net),
+            "service_tds_base_net": flt(r.service_tds_base_net),
+        }
+        for r in rows
+    }
 
 
 # ---------------------------------------------------------------------------

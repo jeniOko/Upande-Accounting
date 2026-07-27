@@ -79,27 +79,31 @@ frappe.query_reports["Withholding Tax Register"] = {
     ],
 
     onload: function (report) {
-        report.page.add_inner_button(__("Approve Suggested"), function () {
-            select_suggested_rows(report);
+        // Grouped under one "Withholding Actions" dropdown button.
+        report.page.add_inner_button(__("Sync to Withholding Tax Management"), function () {
+            sync_to_withholding_tax_management(report);
+        }, __("Withholding Actions"));
+
+        report.page.add_inner_button(__("Process Payments"), function () {
+            process_selected_payments(report);
+        }, __("Withholding Actions"));
+
+        report.page.add_inner_button(__("Update PRN Numbers"), function () {
+            batch_prn_update_dialog(report);
+        }, __("Withholding Actions"));
+
+        report.page.add_inner_button(__("Select Paid Invoices"), function () {
+            select_paid_invoice_rows(report);
         });
 
         report.page.add_inner_button(__("Unselect All"), function () {
             toggle_all_checkboxes(report, false);
-        });
-
-        report.page.add_inner_button(__("Process Payments"), function () {
-            process_selected_payments(report);
-        }).addClass("btn-primary");
-
-        report.page.add_inner_button(__("Update PRN Numbers"), function () {
-            batch_prn_update_dialog(report);
         });
     },
 
     onrefresh: function (report) {
         setTimeout(function () {
             enable_checkbox_functionality(report);
-            enable_suggestion_checkbox(report);
         }, 500);
     },
 
@@ -109,7 +113,7 @@ frappe.query_reports["Withholding Tax Register"] = {
     // Frappe DataTable uses 0-based freeze_columns count.
     //
     // Column order:
-    //   0  Select        1  Suggested       2  Withholding Type
+    //   0  Select        1  Invoice Paid    2  Withholding Type
     //   3  Tax Rate      4  KRA PIN         5  Supplier Invoice No
     //   6  Invoice Date  7  Supplier        ← freeze up to here (8 cols)
     //   8+ Nature of Transaction, amounts, status, etc. — these scroll
@@ -147,16 +151,13 @@ frappe.query_reports["Withholding Tax Register"] = {
                 + ">";
         }
 
-        if (column.fieldname === "suggest_payment") {
-            const is_paid     = data.payment_status === "Paid";
-            const is_checked  = data.suggest_payment ? "checked" : "";
-            const is_disabled = (!data.wtp_record_name || is_paid) ? "disabled" : "";
-            return '<input type="checkbox"'
-                + ' class="suggest-checkbox"'
-                + ' data-wtp-name="' + (data.wtp_record_name || "") + '"'
-                + " " + is_checked
-                + " " + is_disabled
-                + ">";
+        if (column.fieldname === "invoice_paid") {
+            // Read-only status mirrored from Withholding Tax Management —
+            // set automatically when a Payment Entry is reconciled against
+            // the invoice, never editable from this report.
+            return data.invoice_paid
+                ? '<span style="color:green; font-weight:600;">' + __("Yes") + '</span>'
+                : '<span style="color:#888;">' + __("No") + '</span>';
         }
 
         if (column.fieldname === "payment_status") {
@@ -181,6 +182,41 @@ frappe.query_reports["Withholding Tax Register"] = {
 
 
 // ---------------------------------------------------------------------------
+// Backfill — create Withholding Tax Management records for already-submitted
+// invoices (e.g. ones submitted before the Purchase Invoice on_submit hook
+// was wired up) that don't have one yet. Safe to run repeatedly.
+// ---------------------------------------------------------------------------
+
+function sync_to_withholding_tax_management(report) {
+    const company  = frappe.query_report.get_filter_value("company");
+    const from_date = frappe.query_report.get_filter_value("from_date");
+    const to_date   = frappe.query_report.get_filter_value("to_date");
+    const supplier  = frappe.query_report.get_filter_value("supplier");
+
+    frappe.confirm(
+        __("This scans submitted Purchase Invoices matching the current filters and creates any missing Withholding Tax Management records. Existing records are left untouched. Continue?"),
+        function () {
+            frappe.show_alert({ message: __("Syncing..."), indicator: "blue" }, 3);
+            frappe.call({
+                method: "upande_accounting.withholding_tax_management.backfill_withholding_tax_management",
+                args: { company, from_date, to_date, supplier },
+                callback: function (r) {
+                    const res = r.message;
+                    if (!res) return;
+                    frappe.msgprint({
+                        title: __("Sync Complete"),
+                        message: res.message,
+                        indicator: res.status === "success" ? "green" : "orange",
+                    });
+                    if (res.records_created) report.refresh();
+                },
+            });
+        }
+    );
+}
+
+
+// ---------------------------------------------------------------------------
 // Checkbox handlers
 // ---------------------------------------------------------------------------
 
@@ -189,47 +225,7 @@ function enable_checkbox_functionality(report) {
     $(document).on("click", ".report-checkbox", function (e) { e.stopPropagation(); });
 }
 
-function enable_suggestion_checkbox(report) {
-    $(document).off("click", ".suggest-checkbox");
-    $(document).on("click", ".suggest-checkbox", function (event) {
-        event.stopPropagation();
-        const checkbox = $(this);
-        const wtp_name = checkbox.data("wtp-name");
-        const value    = checkbox.is(":checked") ? 1 : 0;
-
-        if (!wtp_name) {
-            frappe.msgprint({
-                title: __("Missing Record"),
-                message: __("No linked Withholding Tax Payment record found."),
-                indicator: "red",
-            });
-            checkbox.prop("checked", !value);
-            return;
-        }
-
-        frappe.call({
-            method: "upande_accounting.upande_accounting_customizations.report"
-                  + ".withholding_tax_register.withholding_tax_register"
-                  + ".update_suggestion_flag",
-            args: { wtp_name, value },
-            callback: function (r) {
-                if (r.message && r.message.status === "success") {
-                    frappe.show_alert({ message: __("Suggestion updated"), indicator: "green" }, 2);
-                    if (report.data) {
-                        report.data.forEach(row => {
-                            if (row.wtp_record_name === wtp_name) row.suggest_payment = value;
-                        });
-                    }
-                } else {
-                    checkbox.prop("checked", !value);
-                }
-            },
-            error: () => checkbox.prop("checked", !value),
-        });
-    });
-}
-
-function select_suggested_rows(report) {
+function select_paid_invoice_rows(report) {
     if (!report.data || !report.data.length) {
         frappe.msgprint({ title: __("No Data"), message: __("Run the report first."), indicator: "orange" });
         return;
@@ -237,7 +233,7 @@ function select_suggested_rows(report) {
     let newly = 0, already = 0, skipped = 0, offscreen = 0;
 
     report.data.forEach(row => {
-        if (!row.suggest_payment) return;
+        if (!row.invoice_paid) return;
         if (row.payment_status === "Paid") { skipped++; return; }
 
         const key = (row.invoice_number || "") + "||" + (row.withholding_account || "");
@@ -250,9 +246,9 @@ function select_suggested_rows(report) {
         }
     });
 
-    let msg = newly + " suggested row(s) selected.";
+    let msg = newly + " paid invoice row(s) selected.";
     if (already)   msg += " " + already   + " already selected.";
-    if (skipped)   msg += " " + skipped   + " skipped (paid).";
+    if (skipped)   msg += " " + skipped   + " skipped (withholding already remitted).";
     if (offscreen) msg += " " + offscreen + " off-screen row(s) queued.";
     frappe.show_alert({ message: __(msg), indicator: "green" }, 4);
 }

@@ -14,10 +14,27 @@ All submitted invoices with a withholding tax line are included (paid and unpaid
 Payment date is shown from the linked Withholding Tax Management record (null if unpaid).
 
 Accounts resolved via is_tax_report_account + tax_report_type = "Withholding Tax".
-Nature of Transaction resolved per tax row via:
-  pit.account_head → tabTax Withholding Account → tabTax Withholding Category.nature_of_transaction
-  This handles both the standard tax_withholding_category field and custom_withholding_1/2/3.
-Gross amount per row = base_tax_amount / rate × 100 (accurate per-row basis).
+
+Nature of Transaction / rate / gross amount are resolved per invoice in Python
+(not via a SQL join against Tax Withholding Account) because a single withholding
+account is commonly shared by several Tax Withholding Categories (e.g. different
+rates over time, or goods vs. services). Joining on the account alone fans a
+single tax row out into one row per matching category — the same invoice then
+appears multiple times with the same amount. Instead, only the categories
+actually selected on the invoice itself (tax_withholding_category plus
+custom_withholding_1/2/3) are considered, exactly mirroring the resolution
+logic in upande_accounting.utils that calculated the withholding in the first
+place.
+
+Gross amount = the actual item-level base the rate was applied to, not the
+invoice's overall gross/net total:
+  - Service-only categories → sum of net_amount for items flagged
+    custom_is_service_item=1.
+  - All-item categories      → sum of net_amount for items flagged apply_tds=1.
+Only when no category can be matched (legacy/manually edited rows) does the
+report fall back to reversing the base out of tax_amount / rate, and finally to
+the invoice's base_tax_withholding_net_total.
+
 Residential Status derived from supplier country (Kenya = Resident, else Non Resident).
 """
 
@@ -25,6 +42,8 @@ Residential Status derived from supplier country (Kenya = Resident, else Non Res
 import frappe
 from frappe import _
 from frappe.utils import flt
+
+from upande_accounting.utils import _get_withholding_rate_for_date
 
 
 def execute(filters=None):
@@ -184,8 +203,14 @@ def get_data(filters):
             pi.name                                         AS invoice_number,
             pi.bill_no,
             pi.posting_date,
+            pi.company,
             pi.supplier,
             pi.supplier_name,
+            pi.base_tax_withholding_net_total,
+            pi.tax_withholding_category,
+            pi.custom_withholding_1,
+            pi.custom_withholding_2,
+            pi.custom_withholding_3,
             sup.tax_id,
             sup.country,
             (
@@ -202,13 +227,7 @@ def get_data(filters):
             )                                               AS email,
             pit.account_head                                AS withholding_account,
             pit.base_tax_amount_after_discount_amount       AS tax_amount,
-            pit.rate                                        AS tax_rate,
-            CASE
-                WHEN pit.rate > 0
-                THEN ROUND(pit.base_tax_amount_after_discount_amount * 100 / pit.rate, 2)
-                ELSE pi.base_tax_withholding_net_total
-            END                                             AS gross_amount,
-            twcat.nature_of_transaction,
+            pit.rate                                        AS stored_rate,
             wtm.payment_date,
             wtm.prn_number
         FROM `tabPurchase Invoice` pi
@@ -216,11 +235,6 @@ def get_data(filters):
             ON  pit.parent       = pi.name
             AND pit.account_head IN ({acc_ph})
             AND pit.tax_amount   > 0
-        LEFT JOIN `tabTax Withholding Account` twa
-            ON  twa.account  = pit.account_head
-            AND twa.company  = pi.company
-        LEFT JOIN `tabTax Withholding Category` twcat
-            ON  twcat.name   = twa.parent
         LEFT JOIN `tabWithholding Tax Management` wtm
             ON  wtm.purchase_invoice    = pi.name
             AND wtm.withholding_account = pit.account_head
@@ -231,27 +245,145 @@ def get_data(filters):
     """.format(acc_ph=acc_ph, conditions=conditions)
 
     rows = frappe.db.sql(sql, tuple(accounts + params), as_dict=True)
+    if not rows:
+        return []
+
+    return _build_result(rows)
+
+
+# ---------------------------------------------------------------------------
+# Per-invoice category / base resolution
+#
+# A withholding account is often shared by several Tax Withholding Categories
+# (different rates over time, goods vs. services, ...). Resolving the category
+# from the account alone is ambiguous — instead only the categories actually
+# selected on the invoice (tax_withholding_category + custom_withholding_1/2/3)
+# are considered, exactly like upande_accounting.utils does when the
+# withholding was first calculated.
+# ---------------------------------------------------------------------------
+
+def _build_result(rows):
+    company = rows[0].get("company")
+
+    invoice_categories = {}
+    all_categories = set()
+    for row in rows:
+        cats = []
+        for f in ("tax_withholding_category", "custom_withholding_1", "custom_withholding_2", "custom_withholding_3"):
+            val = row.get(f)
+            if val and val not in cats:
+                cats.append(val)
+        invoice_categories[row["invoice_number"]] = cats
+        all_categories.update(cats)
+
+    # {category: {account, ...}} — restricted to the accounts this report already filtered on
+    accounts_by_category = {}
+    if all_categories:
+        twa_rows = frappe.get_all(
+            "Tax Withholding Account",
+            filters={"parent": ["in", list(all_categories)], "company": company},
+            fields=["parent", "account"],
+        )
+        for r in twa_rows:
+            accounts_by_category.setdefault(r.parent, set()).add(r.account)
+
+    category_meta = {}
+    if all_categories:
+        for r in frappe.get_all(
+            "Tax Withholding Category",
+            filters={"name": ["in", list(all_categories)]},
+            fields=["name", "nature_of_transaction", "custom_applicable_for_services"],
+        ):
+            category_meta[r.name] = r
+
+    invoice_numbers = list(invoice_categories.keys())
+    item_bases = _get_invoice_item_bases(invoice_numbers)
 
     result = []
     for row in rows:
+        invoice_number = row["invoice_number"]
+        categories = invoice_categories.get(invoice_number, [])
+
+        matched_category = None
+        for cat in categories:
+            if row["withholding_account"] in accounts_by_category.get(cat, set()):
+                matched_category = cat
+                break
+
+        meta = category_meta.get(matched_category)
+        nature_of_transaction = (meta.nature_of_transaction if meta else None) or "Other Income"
+
+        rate = None
+        if matched_category:
+            rate = _get_withholding_rate_for_date(matched_category, row.get("posting_date"))
+        if not rate:
+            rate = flt(row.get("stored_rate"))
+
+        is_service_only = bool(meta and meta.custom_applicable_for_services)
+        bases = item_bases.get(invoice_number, {"all_tds_net": 0.0, "service_tds_net": 0.0})
+        base = bases["service_tds_net"] if is_service_only else bases["all_tds_net"]
+
+        if not base:
+            # No matching category, or the item flags weren't set (legacy data) —
+            # fall back to reversing the base out of the tax amount, then to the
+            # invoice's own withholding net total as a last resort.
+            if rate:
+                base = flt(row.get("tax_amount")) * 100 / rate
+            else:
+                base = flt(row.get("base_tax_withholding_net_total"))
+
         country = (row.get("country") or "").strip()
         result.append({
-            "nature_of_transaction": row.get("nature_of_transaction") or "Other Income",
+            "nature_of_transaction": nature_of_transaction,
             "country":               country or "Kenya",
             "residential_status":    "Resident" if country.lower() == "kenya" else "Non Resident",
             "payment_date":          row.get("payment_date"),
             "tax_id":                row.get("tax_id") or "",
             "supplier_name":         row.get("supplier_name") or row.get("supplier") or "",
-            "bill_no":               row.get("bill_no") or row.get("invoice_number") or "",
+            "bill_no":               row.get("bill_no") or invoice_number or "",
             "email":                 row.get("email") or "",
-            "gross_amount":          flt(row.get("gross_amount")),
-            "tax_rate":              flt(row.get("tax_rate"), 2),
+            "gross_amount":          flt(base, 2),
+            "tax_rate":              flt(rate, 2),
             "tax_amount":            flt(row.get("tax_amount")),
-            "_invoice_number":       row.get("invoice_number"),
+            "_invoice_number":       invoice_number,
             "_prn_number":           row.get("prn_number"),
         })
 
     return result
+
+
+def _get_invoice_item_bases(invoice_numbers):
+    """
+    Per-invoice withholding bases, matching the calc in
+    upande_accounting.utils.recalculate_withholding_tax_amounts:
+      all_tds_net      — net_amount summed over items with apply_tds=1
+      service_tds_net  — net_amount summed over items with custom_is_service_item=1
+
+    Uses base_net_amount (company currency) rather than net_amount (document
+    currency) because tax_amount/gross_amount in this report are both taken
+    from the base-currency tax row fields — mixing currencies here would make
+    the gross-amount-vs-rate math come out wrong for foreign-currency suppliers.
+    """
+    if not invoice_numbers:
+        return {}
+
+    rows = frappe.db.sql(
+        """
+        SELECT
+            parent AS invoice_number,
+            SUM(IF(apply_tds = 1, base_net_amount, 0))              AS all_tds_net,
+            SUM(IF(custom_is_service_item = 1, base_net_amount, 0)) AS service_tds_net
+        FROM `tabPurchase Invoice Item`
+        WHERE parent IN ({ph})
+        GROUP BY parent
+        """.format(ph=", ".join(["%s"] * len(invoice_numbers))),
+        tuple(invoice_numbers),
+        as_dict=True,
+    )
+    return {
+        r.invoice_number: {"all_tds_net": flt(r.all_tds_net), "service_tds_net": flt(r.service_tds_net)}
+        for r in rows
+    }
 
 
 # ---------------------------------------------------------------------------

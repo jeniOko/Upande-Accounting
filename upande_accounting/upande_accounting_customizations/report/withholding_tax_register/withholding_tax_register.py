@@ -20,6 +20,11 @@ from frappe import _
 from frappe.utils import flt, getdate, nowdate
 from collections import defaultdict
 
+from upande_accounting.withholding_tax_management import (
+    get_withholding_accounts,
+    resolve_withholding_category,
+)
+
 
 # ---------------------------------------------------------------------------
 # Entry point
@@ -45,9 +50,9 @@ def get_columns():
             "width":     60,
         },
         {
-            "label":     _("Suggested"),
-            "fieldname": "suggest_payment",
-            "fieldtype": "Check",
+            "label":     _("Invoice Paid"),
+            "fieldname": "invoice_paid",
+            "fieldtype": "Data",
             "width":     90,
         },
         {
@@ -95,7 +100,7 @@ def get_columns():
             "width":     260,
         },
         {
-            "label":     _("Vatable Amount (Transaction Currency)"),
+            "label":     _("Taxable Amount (Transaction Currency)"),
             "fieldname": "base_amount",
             "fieldtype": "Currency",
             "options":   "transaction_currency",
@@ -123,7 +128,7 @@ def get_columns():
             "width":     110,
         },
         {
-            "label":     _("Vatable Amount (KES)"),
+            "label":     _("Taxable Amount (KES)"),
             "fieldname": "base_net_amount",
             "fieldtype": "Currency",
             "width":     160,
@@ -170,62 +175,59 @@ def get_columns():
 
 
 # ---------------------------------------------------------------------------
-# Resolve withholding accounts via tax_report_type tag
+# Withholding account / category resolution now lives in
+# upande_accounting.withholding_tax_management (imported above) — shared with
+# the Purchase Invoice submit/cancel hooks so the register and the Withholding
+# Tax Management framework always agree on which accounts and categories
+# apply.
 # ---------------------------------------------------------------------------
 
-def _get_category_for_account(account, company):
-    """Return the Tax Withholding Category name that owns the given account."""
-    rows = frappe.get_all(
-        "Tax Withholding Account",
-        filters={"account": account, "company": company},
-        fields=["parent"],
-        limit=1,
-    )
-    return rows[0].parent if rows else ""
-
-
-def get_withholding_accounts(company, report_types=("WHTAX", "WHVAT")):
-    """
-    Return { account_name: tax_report_type } for all accounts tagged as
-    WHTAX or WHVAT via the is_tax_report_account / tax_report_type fields.
-
-    Falls back to an empty dict if no accounts are tagged — the caller
-    will warn the user.
-    """
-    placeholders = ", ".join(["%s"] * len(report_types))
-    sql = """
-        SELECT name, tax_report_type
-        FROM   `tabAccount`
-        WHERE  account_type         = 'Tax'
-          AND  is_tax_report_account = 1
-          AND  tax_report_type       IN ({ph})
-          {company_cond}
-    """.format(
-        ph=placeholders,
-        company_cond="AND company = %s" if company else "",
-    )
-    params = list(report_types)
-    if company:
-        params.append(company)
-
-    rows = frappe.db.sql(sql, tuple(params), as_dict=True)
-    return {r.name: r.tax_report_type for r in rows}
-
-
 # ---------------------------------------------------------------------------
-# Pull nature_of_transaction from Tax Withholding Category
+# Per-invoice category / taxable-base resolution
+#
+# A withholding account is often shared by several Tax Withholding Categories
+# (different rates over time, goods vs. services) — resolve_withholding_category
+# restricts the match to the categories actually selected on the invoice
+# (tax_withholding_category + custom_withholding_1/2/3).
+#
+# The taxable base for a row is NOT the invoice's overall gross/net total:
+#   - Service-only categories → net_amount summed over items flagged
+#     custom_is_service_item=1.
+#   - All-item categories      → net_amount summed over items flagged
+#     apply_tds=1.
+# Falls back to the invoice's own tax_withholding_net_total when no category
+# can be matched (legacy/manually edited rows).
 # ---------------------------------------------------------------------------
 
-def get_nature_map():
-    """
-    Returns { tax_withholding_category_name: nature_of_transaction }
-    from the custom field we added to Tax Withholding Category.
-    """
-    rows = frappe.get_all(
-        "Tax Withholding Category",
-        fields=["name", "nature_of_transaction"],
+def _get_invoice_item_bases(invoice_numbers):
+    """Per-invoice withholding bases, in both transaction and base (KES) currency."""
+    if not invoice_numbers:
+        return {}
+
+    rows = frappe.db.sql(
+        """
+        SELECT
+            parent AS invoice_number,
+            SUM(IF(apply_tds = 1, net_amount, 0))                   AS all_tds_net,
+            SUM(IF(custom_is_service_item = 1, net_amount, 0))      AS service_tds_net,
+            SUM(IF(apply_tds = 1, base_net_amount, 0))              AS all_tds_base_net,
+            SUM(IF(custom_is_service_item = 1, base_net_amount, 0)) AS service_tds_base_net
+        FROM `tabPurchase Invoice Item`
+        WHERE parent IN ({ph})
+        GROUP BY parent
+        """.format(ph=", ".join(["%s"] * len(invoice_numbers))),
+        tuple(invoice_numbers),
+        as_dict=True,
     )
-    return {r.name: r.nature_of_transaction or "" for r in rows}
+    return {
+        r.invoice_number: {
+            "all_tds_net":          flt(r.all_tds_net),
+            "service_tds_net":      flt(r.service_tds_net),
+            "all_tds_base_net":     flt(r.all_tds_base_net),
+            "service_tds_base_net": flt(r.service_tds_base_net),
+        }
+        for r in rows
+    }
 
 
 # ---------------------------------------------------------------------------
@@ -270,8 +272,6 @@ def get_data(filters):
             )
             return []
 
-    nature_map = get_nature_map()
-
     acc_ph = ", ".join(["%s"] * len(wh_accounts))
 
     conditions, params = build_conditions(filters)
@@ -284,8 +284,12 @@ def get_data(filters):
             pi.name                                         AS invoice_number,
             pi.bill_no,
             pi.bill_date,
+            pi.company,
             pi.supplier,
             pi.tax_withholding_category,
+            pi.custom_withholding_1,
+            pi.custom_withholding_2,
+            pi.custom_withholding_3,
             pi.tax_withholding_net_total                    AS base_amount,
             pi.base_tax_withholding_net_total               AS base_net_amount,
             pi.currency                                     AS transaction_currency,
@@ -301,7 +305,7 @@ def get_data(filters):
             wtm.payment_date,
             wtm.prn_number,
             wtm.journal_entry,
-            COALESCE(wtm.suggested_for_payment, 0)          AS suggest_payment
+            COALESCE(wtm.suggested_for_payment, 0)          AS invoice_paid
         FROM `tabPurchase Invoice` pi
         JOIN `tabPurchase Taxes and Charges` pit
             ON  pit.parent      = pi.name
@@ -322,6 +326,42 @@ def get_data(filters):
 
     all_params = list(wh_accounts.keys()) + params
     rows = frappe.db.sql(sql, tuple(all_params), as_dict=True)
+    if not rows:
+        return []
+
+    # Resolve the category actually selected on each invoice for this account
+    # (bulk — a per-row lookup would mean N extra queries for N rows). Only
+    # the categories selected on the invoice itself are considered, since one
+    # withholding account is often shared by several categories.
+    invoice_categories = {}
+    all_categories = set()
+    for row in rows:
+        cats = []
+        for f in ("tax_withholding_category", "custom_withholding_1", "custom_withholding_2", "custom_withholding_3"):
+            val = row.get(f)
+            if val and val not in cats:
+                cats.append(val)
+        invoice_categories[row["invoice_number"]] = cats
+        all_categories.update(cats)
+
+    accounts_by_category = {}
+    category_meta = {}
+    if all_categories:
+        for r in frappe.get_all(
+            "Tax Withholding Account",
+            filters={"parent": ["in", list(all_categories)]},
+            fields=["parent", "account"],
+        ):
+            accounts_by_category.setdefault(r.parent, set()).add(r.account)
+
+        for r in frappe.get_all(
+            "Tax Withholding Category",
+            filters={"name": ["in", list(all_categories)]},
+            fields=["name", "nature_of_transaction", "custom_applicable_for_services"],
+        ):
+            category_meta[r.name] = r
+
+    item_bases = _get_invoice_item_bases(list(invoice_categories.keys()))
 
     for row in rows:
         # Payment status default
@@ -333,9 +373,25 @@ def get_data(filters):
         row["withholding_type_display"] = report_type   # WHTAX or WHVAT
         row["withholding_type"]         = report_type
 
-        # Nature of transaction from Tax Withholding Category
-        twc = row.get("tax_withholding_category") or ""
-        row["nature_of_transaction"] = nature_map.get(twc, "")
+        matched_category = None
+        for cat in invoice_categories.get(row["invoice_number"], []):
+            if row["withholding_account"] in accounts_by_category.get(cat, set()):
+                matched_category = cat
+                break
+        meta = category_meta.get(matched_category)
+        row["nature_of_transaction"] = (meta.nature_of_transaction if meta else None) or ""
+
+        # Taxable amount = the actual item-level base the rate was applied to,
+        # not the invoice's overall gross/net total.
+        is_service_only = bool(meta and meta.custom_applicable_for_services)
+        bases = item_bases.get(row["invoice_number"], {})
+        base_amount = bases.get("service_tds_net" if is_service_only else "all_tds_net")
+        base_net_amount = bases.get("service_tds_base_net" if is_service_only else "all_tds_base_net")
+        if base_amount:
+            row["base_amount"] = base_amount
+        if base_net_amount:
+            row["base_net_amount"] = base_net_amount
+        # else: keep the SQL fallback (tax_withholding_net_total) already on the row
 
         # Residential status derived from supplier country
         country = row.get("supplier_country") or ""
@@ -345,8 +401,8 @@ def get_data(filters):
         # WTP record name for JS
         row["wtp_record_name"] = row.get("wtp_name") or None
 
-        # suggest_payment as int for JS truthiness
-        row["suggest_payment"] = int(row.get("suggest_payment") or 0)
+        # invoice_paid as int for JS truthiness
+        row["invoice_paid"] = int(row.get("invoice_paid") or 0)
 
         # Default select_row
         row["select_row"] = 0
@@ -401,23 +457,6 @@ def build_conditions(filters):
 # ---------------------------------------------------------------------------
 # Whitelisted API methods (unchanged from original, kept here)
 # ---------------------------------------------------------------------------
-
-@frappe.whitelist()
-def update_suggestion_flag(wtp_name, value):
-    if not wtp_name:
-        frappe.throw(_("Withholding Tax Management name is required"))
-    try:
-        doc = frappe.get_doc("Withholding Tax Management", wtp_name)
-        doc.suggested_for_payment = int(value)
-        doc.save(ignore_permissions=False)
-        frappe.db.commit()
-        return {"status": "success", "wtm_name": wtp_name, "value": int(value)}
-    except frappe.DoesNotExistError:
-        frappe.throw(_("Record not found: {0}").format(wtp_name))
-    except Exception as e:
-        frappe.log_error(frappe.get_traceback(), "Suggestion Flag Update Error")
-        frappe.throw(_("Error: {0}").format(str(e)))
-
 
 @frappe.whitelist()
 def process_withholding_payments(
@@ -520,8 +559,8 @@ def _create_or_update_wtp(row_data, journal_entry):
         wtp.withholding_account   = withholding_account
         wtp.supplier              = row_data.get("supplier")
         wtp.withheld_amount       = flt(row_data.get("withheld_amount", 0))
-        pi_company = frappe.db.get_value("Purchase Invoice", invoice_number, "company") or ""
-        wtp.withholding_category  = _get_category_for_account(withholding_account, pi_company)
+        pi_doc = frappe.get_doc("Purchase Invoice", invoice_number)
+        wtp.withholding_category  = resolve_withholding_category(pi_doc, withholding_account, pi_doc.company)
 
     wtp.payment_status = "Paid"
     wtp.payment_date   = nowdate()
@@ -564,104 +603,3 @@ def batch_update_prn_numbers(prn_updates):
         "updated_count": updated,
         "message":       msg,
     }
-
-
-# ---------------------------------------------------------------------------
-# Hook — auto-create WTP record on Purchase Invoice submit
-# ---------------------------------------------------------------------------
-
-def create_unpaid_wtp_on_submit(doc, method=None):
-    """
-    Called from hooks.py on Purchase Invoice submit.
-    Creates a Withholding Tax Management record for each withholding line
-    using tagged accounts instead of LIKE patterns.
-    """
-    company = doc.company
-    wh_accounts = get_withholding_accounts(company)
-    if not wh_accounts:
-        return
-
-    lines = frappe.db.sql("""
-        SELECT account_head, base_tax_amount_after_discount_amount, tax_amount, rate
-        FROM   `tabPurchase Taxes and Charges`
-        WHERE  parent      = %s
-          AND  account_head IN ({ph})
-          AND  tax_amount  > 0
-    """.format(ph=", ".join(["%s"] * len(wh_accounts))),
-        tuple([doc.name] + list(wh_accounts.keys())),
-        as_dict=True,
-    )
-
-    for line in lines:
-        if frappe.db.exists("Withholding Tax Management", {
-            "purchase_invoice":   doc.name,
-            "withholding_account": line.account_head,
-        }):
-            continue
-        try:
-            wtp = frappe.new_doc("Withholding Tax Management")
-            wtp.purchase_invoice      = doc.name
-            wtp.withholding_account   = line.account_head
-            wtp.supplier              = doc.supplier
-            wtp.withheld_amount       = flt(line.base_tax_amount_after_discount_amount, 2)
-            wtp.payment_status        = "Unpaid"
-            wtp.withholding_category  = _get_category_for_account(line.account_head, company)
-            wtp.insert(ignore_permissions=True)
-        except Exception as e:
-            frappe.log_error(
-                frappe.get_traceback(),
-                "Failed to create WTP on submit: {0}".format(str(e)),
-            )
-
-
-def cancel_wtp_on_invoice_cancel(doc, method=None):
-    """
-    When a Purchase Invoice is cancelled:
-    1. Cancel any submitted Withholding Payment Entries that contain the
-       invoice's WTM records (reverses the KRA remittance JE).
-    2. Delete all linked WTM records regardless of payment status.
-    """
-    all_wtm = frappe.get_all(
-        "Withholding Tax Management",
-        filters={"purchase_invoice": doc.name},
-        fields=["name"],
-    )
-    if not all_wtm:
-        return
-
-    wtm_names = [r.name for r in all_wtm]
-
-    # Cancel any submitted WPEs that reference these WTM records (deduplicated)
-    wpe_rows = frappe.get_all(
-        "WPE Withholding Entry",
-        filters={"wtm_reference": ["in", wtm_names]},
-        fields=["parent"],
-    )
-    cancelled_wpes = set()
-    for row in wpe_rows:
-        wpe_name = row.parent
-        if wpe_name in cancelled_wpes:
-            continue
-        try:
-            wpe = frappe.get_doc("Withholding Payment Entry", wpe_name)
-            if wpe.docstatus == 1:
-                wpe.cancel()
-            cancelled_wpes.add(wpe_name)
-        except Exception:
-            frappe.log_error(
-                frappe.get_traceback(),
-                "Failed to cancel WPE on invoice cancel: {}".format(wpe_name),
-            )
-
-    # Delete all WTM records for this invoice
-    for name in wtm_names:
-        try:
-            frappe.delete_doc(
-                "Withholding Tax Management", name,
-                ignore_permissions=True, force=True,
-            )
-        except Exception:
-            frappe.log_error(
-                frappe.get_traceback(),
-                "Failed to delete WTM on cancel: {}".format(name),
-            )

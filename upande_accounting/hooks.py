@@ -1,5 +1,5 @@
 app_name = "upande_accounting"
-app_title = "Upande Accounting Customizations"
+app_title = "Upande Accounting"
 app_publisher = "jeniffer@upande.com"
 app_description = "Upande erpnext customization for the accounting module"
 app_email = "okothjeniffer10@gmail.com"

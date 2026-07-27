@@ -24,6 +24,19 @@ from frappe import _
 from frappe.utils import flt, getdate, nowdate
 
 
+# Exchange Gain Or Loss Journal Entries are system-generated forex revaluation/
+# rounding postings, not real customer transactions — exclude them everywhere
+# GL Entry is queried in this report (opening balance, transactions, ageing).
+EXCLUDE_FOREX_JE = """
+    AND NOT EXISTS (
+        SELECT 1 FROM `tabJournal Entry` je
+        WHERE je.name = gle.voucher_no
+          AND gle.voucher_type = 'Journal Entry'
+          AND je.voucher_type = 'Exchange Gain Or Loss'
+    )
+"""
+
+
 def execute(filters=None):
     filters = filters or {}
     validate_filters(filters)
@@ -261,9 +274,11 @@ def get_data(filters):
             AND gle.account  IN ({acc})
             AND gle.posting_date < %s
             AND gle.is_cancelled  = 0
+            {exclude_forex_je}
             {company_cond}
     """.format(
         acc=acc_placeholders,
+        exclude_forex_je=EXCLUDE_FOREX_JE,
         company_cond="AND gle.company = %s" if company else "",
     )
 
@@ -293,12 +308,14 @@ def get_data(filters):
             AND gle.account  IN ({acc})
             AND gle.posting_date BETWEEN %s AND %s
             AND gle.is_cancelled  = 0
+            {exclude_forex_je}
             {company_cond}
         ORDER BY
             gle.posting_date ASC,
             gle.creation ASC
     """.format(
         acc=acc_placeholders,
+        exclude_forex_je=EXCLUDE_FOREX_JE,
         company_cond="AND gle.company = %s" if company else "",
     )
 
@@ -458,7 +475,7 @@ def get_ageing_summary(currency, customer=None, company=None, to_date=None, acco
                 voucher_type,
                 SUM(debit_in_account_currency)  AS total_debit,
                 SUM(credit_in_account_currency) AS total_credit
-            FROM `tabGL Entry`
+            FROM `tabGL Entry` gle
             WHERE
                 party_type   = 'Customer'
                 AND party    = %s
@@ -466,8 +483,9 @@ def get_ageing_summary(currency, customer=None, company=None, to_date=None, acco
                 AND posting_date <= %s
                 AND is_cancelled  = 0
                 AND company  = %s
+                {exclude_forex_je}
             GROUP BY voucher_no, voucher_type
-            """.format(acc_ph=acc_ph),
+            """.format(acc_ph=acc_ph, exclude_forex_je=EXCLUDE_FOREX_JE),
             tuple([customer] + accounts + [to_date, company]),
             as_dict=True,
         )

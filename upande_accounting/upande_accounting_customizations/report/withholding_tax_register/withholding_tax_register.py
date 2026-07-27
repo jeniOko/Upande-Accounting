@@ -17,12 +17,16 @@ from any field on the invoice header — the category can live on an item's
 native tax_withholding_category or on our own additional-withholding item
 fields, so account-based resolution works for both.
 
-Vatable Amount = net_total + taxes_and_charges_added (transaction currency) /
-base_net_total + base_taxes_and_charges_added (KES) — i.e. all tax rows with
-add_deduct_tax = "Add", matching this app's own pre-existing Gross Amount
-definition (upande_accounting.utils.set_gross_amount). It is a whole-invoice
-figure, not apportioned per withholding row — every withholding row on the
-same invoice shows the same Vatable Amount.
+Vatable Amount is derived per row as tax_amount / rate * 100 (KES) and the
+transaction-currency equivalent from tax_amount — the base specific to THIS
+withholding row's category, not the whole invoice's gross value, since an
+invoice can carry items under more than one category, or none at all,
+alongside the withheld ones.
+
+Tax Withholding Category and the Withholding Tax Management join both use
+scalar LIMIT 1 subqueries rather than JOINs, so a company that reuses one GL
+account across multiple Tax Withholding Categories, or has more than one WTM
+row per invoice/account, can never fan this query out into duplicate rows.
 """
 
 import frappe
@@ -311,9 +315,24 @@ def get_data(filters):
             pi.bill_no,
             pi.bill_date,
             pi.supplier,
-            twcat.name                                      AS tax_withholding_category,
-            (pi.net_total + pi.taxes_and_charges_added)     AS base_amount,
-            (pi.base_net_total + pi.base_taxes_and_charges_added) AS base_net_amount,
+            (
+                SELECT twa2.parent
+                FROM   `tabTax Withholding Account` twa2
+                WHERE  twa2.account = pit.account_head
+                  AND  twa2.company = pi.company
+                ORDER BY twa2.name
+                LIMIT  1
+            )                                               AS tax_withholding_category,
+            CASE
+                WHEN pit.rate > 0
+                THEN ROUND(pit.tax_amount * 100 / pit.rate, 2)
+                ELSE NULL
+            END                                             AS base_amount,
+            CASE
+                WHEN pit.rate > 0
+                THEN ROUND(pit.base_tax_amount_after_discount_amount * 100 / pit.rate, 2)
+                ELSE NULL
+            END                                             AS base_net_amount,
             pi.currency                                     AS transaction_currency,
             pi.conversion_rate                              AS exchange_rate,
             sup.tax_id,
@@ -335,14 +354,15 @@ def get_data(filters):
             AND pit.tax_amount  > 0
         LEFT JOIN `tabSupplier` sup
             ON sup.name = pi.supplier
-        LEFT JOIN `tabTax Withholding Account` twa
-            ON  twa.account = pit.account_head
-            AND twa.company = pi.company
-        LEFT JOIN `tabTax Withholding Category` twcat
-            ON  twcat.name = twa.parent
         LEFT JOIN `tabWithholding Tax Management` wtm
-            ON  wtm.purchase_invoice    = pi.name
-            AND wtm.withholding_account = pit.account_head
+            ON  wtm.name = (
+                SELECT wtm3.name
+                FROM   `tabWithholding Tax Management` wtm3
+                WHERE  wtm3.purchase_invoice    = pi.name
+                  AND  wtm3.withholding_account = pit.account_head
+                ORDER BY wtm3.name
+                LIMIT  1
+            )
         WHERE pi.docstatus = 1
         {conditions}
         ORDER BY pi.bill_date DESC, pi.name DESC

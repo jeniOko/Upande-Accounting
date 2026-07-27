@@ -23,11 +23,14 @@ Nature of Transaction resolved per tax row via:
   This is account-based, not category-field-based, so it works regardless of whether
   the category came from an item's native tax_withholding_category or from our own
   additional-withholding item fields.
-Gross Amount = Purchase Invoice.gross_amount (net_total + taxes_and_charges_added,
-i.e. all tax rows with add_deduct_tax = "Add" — this app's own pre-existing definition,
-set on before_save via upande_accounting.utils.set_gross_amount). It is a whole-invoice
-figure, not apportioned per withholding row — every withholding row on the same
-invoice shows the same Gross Amount.
+Gross Amount = tax_amount / rate * 100, i.e. the taxable base specific to THIS
+withholding row's category — not the whole invoice's gross value, since only
+the items subject to that category's rate should count (an invoice can carry
+items under different categories, or none at all, alongside the withheld ones).
+Nature of Transaction / Withholding Tax Management lookups use scalar subqueries
+(LIMIT 1) rather than JOINs, so a company that reuses one GL account across
+multiple Tax Withholding Categories (or has more than one WTM row per invoice/
+account) can never fan this query out into duplicate rows per invoice.
 Residential Status derived from supplier country (Kenya = Resident, else Non Resident).
 """
 
@@ -213,27 +216,45 @@ def get_data(filters):
             pit.account_head                                AS withholding_account,
             pit.base_tax_amount_after_discount_amount       AS tax_amount,
             pit.rate                                        AS tax_rate,
-            pi.gross_amount                                 AS gross_amount,
-            twcat.nature_of_transaction,
-            wtm.payment_date,
-            wtm.prn_number
+            CASE
+                WHEN pit.rate > 0
+                THEN ROUND(pit.base_tax_amount_after_discount_amount * 100 / pit.rate, 2)
+                ELSE NULL
+            END                                             AS gross_amount,
+            (
+                SELECT twcat2.nature_of_transaction
+                FROM   `tabTax Withholding Account` twa2
+                JOIN   `tabTax Withholding Category` twcat2 ON twcat2.name = twa2.parent
+                WHERE  twa2.account = pit.account_head
+                  AND  twa2.company = pi.company
+                ORDER BY twa2.name
+                LIMIT  1
+            )                                               AS nature_of_transaction,
+            (
+                SELECT wtm2.payment_date
+                FROM   `tabWithholding Tax Management` wtm2
+                WHERE  wtm2.purchase_invoice    = pi.name
+                  AND  wtm2.withholding_account = pit.account_head
+                ORDER BY wtm2.name
+                LIMIT  1
+            )                                               AS payment_date,
+            (
+                SELECT wtm2.prn_number
+                FROM   `tabWithholding Tax Management` wtm2
+                WHERE  wtm2.purchase_invoice    = pi.name
+                  AND  wtm2.withholding_account = pit.account_head
+                ORDER BY wtm2.name
+                LIMIT  1
+            )                                               AS prn_number
         FROM `tabPurchase Invoice` pi
         JOIN `tabPurchase Taxes and Charges` pit
             ON  pit.parent       = pi.name
             AND pit.account_head IN ({acc_ph})
             AND pit.tax_amount   > 0
-        LEFT JOIN `tabTax Withholding Account` twa
-            ON  twa.account  = pit.account_head
-            AND twa.company  = pi.company
-        LEFT JOIN `tabTax Withholding Category` twcat
-            ON  twcat.name   = twa.parent
-        LEFT JOIN `tabWithholding Tax Management` wtm
-            ON  wtm.purchase_invoice    = pi.name
-            AND wtm.withholding_account = pit.account_head
         LEFT JOIN `tabSupplier` sup ON sup.name = pi.supplier
         WHERE pi.docstatus = 1
         {conditions}
-        ORDER BY COALESCE(wtm.payment_date, pi.posting_date) ASC, pi.supplier ASC
+        ORDER BY pi.posting_date ASC, pi.supplier ASC
     """.format(acc_ph=acc_ph, conditions=conditions)
 
     rows = frappe.db.sql(sql, tuple(accounts + params), as_dict=True)
@@ -278,12 +299,26 @@ def build_conditions(filters):
         conditions.append("pi.company = %s")
         params.append(filters["company"])
 
+    wtm_payment_date = """
+        COALESCE(
+            (
+                SELECT wtm4.payment_date
+                FROM   `tabWithholding Tax Management` wtm4
+                WHERE  wtm4.purchase_invoice    = pi.name
+                  AND  wtm4.withholding_account = pit.account_head
+                ORDER BY wtm4.name
+                LIMIT  1
+            ),
+            pi.posting_date
+        )
+    """
+
     if filters.get("from_date"):
-        conditions.append("COALESCE(wtm.payment_date, pi.posting_date) >= %s")
+        conditions.append("{0} >= %s".format(wtm_payment_date))
         params.append(filters["from_date"])
 
     if filters.get("to_date"):
-        conditions.append("COALESCE(wtm.payment_date, pi.posting_date) <= %s")
+        conditions.append("{0} <= %s".format(wtm_payment_date))
         params.append(filters["to_date"])
 
     if filters.get("supplier"):

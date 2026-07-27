@@ -25,10 +25,15 @@ are on-screen only, for verification, not part of the KRA upload file.
 Accounts resolved via is_tax_report_account + tax_report_type IN
 ('Withholding VAT', 'WHVAT') on the Account master.
 
-Taxable Amount = Purchase Invoice.gross_amount (net_total + taxes_and_charges_added,
-i.e. all tax rows with add_deduct_tax = "Add") — this app's own pre-existing
-definition, set on before_save via upande_accounting.utils.set_gross_amount. It is a
-whole-invoice figure, not apportioned per withholding row.
+Taxable Amount = tax_amount / (rate / 100) per invoice tax row — the base
+specific to THIS category's rate, not the whole invoice's gross value, since
+only the items actually subject to that category should count.
+
+The join to Withholding Tax Management pins to a single deterministic row
+(via a LIMIT 1 subquery) rather than joining loosely on
+(purchase_invoice, withholding_account, payment_status='Paid'), so more than
+one Paid WTM row for the same invoice/account can never fan this query out
+into duplicate result rows.
 """
 
 import frappe
@@ -191,7 +196,11 @@ def get_data(filters):
             pit.account_head                                    AS withholding_account,
             pit.base_tax_amount_after_discount_amount           AS tax_amount,
             pit.rate                                            AS tax_rate,
-            pi.gross_amount                                     AS taxable_amount,
+            CASE
+                WHEN pit.rate > 0
+                THEN ROUND(pit.base_tax_amount_after_discount_amount * 100.0 / pit.rate, 2)
+                ELSE NULL
+            END                                                 AS taxable_amount,
             wtm.payment_date,
             wtm.prn_number,
             wtm.name                                            AS wtm_name
@@ -201,9 +210,15 @@ def get_data(filters):
             AND pit.account_head IN ({acc_ph})
             AND pit.tax_amount   > 0
         JOIN `tabWithholding Tax Management` wtm
-            ON  wtm.purchase_invoice    = pi.name
-            AND wtm.withholding_account = pit.account_head
-            AND wtm.payment_status      = 'Paid'
+            ON  wtm.name = (
+                SELECT wtm2.name
+                FROM   `tabWithholding Tax Management` wtm2
+                WHERE  wtm2.purchase_invoice    = pi.name
+                  AND  wtm2.withholding_account = pit.account_head
+                  AND  wtm2.payment_status      = 'Paid'
+                ORDER BY wtm2.name
+                LIMIT  1
+            )
         LEFT JOIN `tabSupplier` sup
             ON  sup.name = pi.supplier
         WHERE pi.docstatus = 1

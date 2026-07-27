@@ -129,6 +129,23 @@ def get_receivable_accounts(company):
     )
 
 
+# Exchange Rate revaluation between customer/supplier accounts is booked via a
+# Journal Entry whose own voucher_type is "Exchange Gain Or Loss". These entries
+# only move the base-currency balance (revaluing the FX position) and never carry
+# a party-currency amount, so they add nothing but noise to a party statement —
+# excluded everywhere the ledger is queried.
+EXCLUDE_EXCHANGE_GAIN_LOSS = """
+    AND NOT (
+        gle.voucher_type = 'Journal Entry'
+        AND EXISTS (
+            SELECT 1 FROM `tabJournal Entry` je
+            WHERE je.name = gle.voucher_no
+              AND je.voucher_type = 'Exchange Gain Or Loss'
+        )
+    )
+"""
+
+
 def get_customer_currency(customer, company):
     cust_currency = frappe.db.get_value("Customer", customer, "default_currency")
     if cust_currency:
@@ -262,9 +279,11 @@ def get_data(filters):
             AND gle.posting_date < %s
             AND gle.is_cancelled  = 0
             {company_cond}
+            {exclude_fx}
     """.format(
         acc=acc_placeholders,
         company_cond="AND gle.company = %s" if company else "",
+        exclude_fx=EXCLUDE_EXCHANGE_GAIN_LOSS,
     )
 
     open_vals = [customer] + accounts + [from_date]
@@ -294,12 +313,14 @@ def get_data(filters):
             AND gle.posting_date BETWEEN %s AND %s
             AND gle.is_cancelled  = 0
             {company_cond}
+            {exclude_fx}
         ORDER BY
             gle.posting_date ASC,
             gle.creation ASC
     """.format(
         acc=acc_placeholders,
         company_cond="AND gle.company = %s" if company else "",
+        exclude_fx=EXCLUDE_EXCHANGE_GAIN_LOSS,
     )
 
     txn_vals = [customer] + accounts + [from_date, to_date]

@@ -97,6 +97,7 @@ doc_events = {
 # include js in doctype views
 doctype_js = {
     "Item": "public/js/item.js",
+    "Journal Entry": "public/js/journal_entry.js",
     "Payment Entry": "public/js/payment_entry.js",
     "Purchase Invoice": "public/js/purchase_invoice.js",
     "Withholding Tax Management": "public/js/withholding_tax_management.js",

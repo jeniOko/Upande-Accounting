@@ -48,6 +48,38 @@ frappe.query_reports["Customer Statement Of Account"] = {
             };
             frappe.set_route("query-report", "Customer Statement Summary");
         });
+
+        // The built-in "Print" button in the report menu renders html_format
+        // client-side with a template engine that can't parse this report's
+        // Jinja template, so it fails silently. This button instead asks the
+        // server to render the same template properly and returns a PDF.
+        report.page.add_inner_button(__("Print Statement"), function () {
+            const customer  = frappe.query_report.get_filter_value("customer");
+            const company   = frappe.query_report.get_filter_value("company");
+            const from_date = frappe.query_report.get_filter_value("from_date");
+            const to_date   = frappe.query_report.get_filter_value("to_date");
+
+            if (!customer || !company || !from_date || !to_date) {
+                frappe.msgprint(__("Please set Company, Customer, From Date and To Date."));
+                return;
+            }
+
+            const params = new URLSearchParams({
+                customer:      customer,
+                company:       company,
+                from_date:     from_date,
+                to_date:       to_date,
+                show_ageing:   frappe.query_report.get_filter_value("show_ageing") || 0,
+                include_draft: frappe.query_report.get_filter_value("include_draft") || 0,
+                currency:      frappe.query_report.get_filter_value("currency") || "",
+            });
+
+            window.open(
+                "/api/method/upande_accounting.upande_accounting_customizations.report."
+                + "customer_statement_of_account.customer_statement_of_account.download_statement_pdf?"
+                + params.toString()
+            );
+        });
     },
 
     filters: [

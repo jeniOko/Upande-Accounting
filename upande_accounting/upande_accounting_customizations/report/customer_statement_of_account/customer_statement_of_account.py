@@ -19,9 +19,13 @@ Document type display labels:
 Source: GL Entry against the customer's receivable account(s).
 """
 
+import os
+from collections import OrderedDict
+
 import frappe
 from frappe import _
 from frappe.utils import flt, getdate, nowdate
+from frappe.utils.pdf import get_pdf
 
 
 # Exchange Gain Or Loss Journal Entries are system-generated forex revaluation/
@@ -43,6 +47,55 @@ def execute(filters=None):
     columns = get_columns()
     data    = get_data(filters)
     return columns, data
+
+
+# ---------------------------------------------------------------------------
+# Print / PDF
+# ---------------------------------------------------------------------------
+#
+# The report's built-in "Print"/"PDF" buttons (in the Query Report view)
+# render html_format client-side with a tiny mustache-style templating engine
+# that does not understand real Jinja (no `{% elif %}`, `namespace()`,
+# filters, or `frappe.get_doc`). To keep those buttons on the system-default
+# tabular print (with column picking + letterhead, like any other report),
+# the fancy layout below is named *_print_template.html — not
+# customer_statement_of_account.html — so Frappe does not auto-load it as
+# html_format. It is rendered here instead, server-side via
+# frappe.render_template, and shipped to the browser as a ready-made PDF
+# through the "Print Statement" button.
+
+@frappe.whitelist()
+def download_statement_pdf(customer, from_date, to_date, company=None, show_ageing=1, include_draft=0, currency=None):
+    filters = frappe._dict({
+        "customer":      customer,
+        "from_date":     from_date,
+        "to_date":       to_date,
+        "company":       company,
+        "show_ageing":   show_ageing,
+        "include_draft": include_draft,
+    })
+    validate_filters(filters)
+    data = get_data(filters)
+
+    statement_currency = currency or (data[0]["currency"] if data else get_customer_currency(customer, company))
+
+    html_path = os.path.join(os.path.dirname(__file__), "customer_statement_of_account_print_template.html")
+    with open(html_path) as f:
+        template = f.read()
+
+    doc_context = frappe._dict({
+        "company":   company,
+        "customer":  customer,
+        "from_date": from_date,
+        "to_date":   to_date,
+        "currency":  statement_currency,
+    })
+
+    html = frappe.render_template(template, {"doc": doc_context, "data": data})
+
+    frappe.local.response.filename     = f"Statement-{customer}-{to_date}.pdf"
+    frappe.local.response.filecontent  = get_pdf(html)
+    frappe.local.response.type         = "download"
 
 
 # ---------------------------------------------------------------------------
@@ -334,6 +387,29 @@ def get_data(filters):
         )
     else:
         all_txns = list(transactions)
+
+    # Collapse GL-entry rows belonging to the same voucher into a single
+    # statement line. A Payment Entry reconciled against several invoices
+    # creates one GL Entry per allocation against the receivable account —
+    # without this, a single receipt would show up as one row per invoice
+    # it was allocated to instead of the total amount received.
+    grouped_txns = OrderedDict()
+    for txn in all_txns:
+        key = (txn.get("voucher_type"), txn.get("voucher_no"))
+        group = grouped_txns.get(key)
+        if group is None:
+            group = frappe._dict({
+                "posting_date": txn.get("posting_date"),
+                "voucher_type": txn.get("voucher_type"),
+                "voucher_no":   txn.get("voucher_no"),
+                "debit":        0,
+                "credit":       0,
+            })
+            grouped_txns[key] = group
+        group.debit  += flt(txn.get("debit"))
+        group.credit += flt(txn.get("credit"))
+
+    all_txns = list(grouped_txns.values())
 
     # ------------------------------------------------------------------
     # 3. Assemble rows

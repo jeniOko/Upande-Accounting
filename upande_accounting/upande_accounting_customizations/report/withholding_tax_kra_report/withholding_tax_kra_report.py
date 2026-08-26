@@ -13,11 +13,24 @@ Produces a KRA-compatible withholding tax (WHTAX) filing summary with columns:
 All submitted invoices with a withholding tax line are included (paid and unpaid).
 Payment date is shown from the linked Withholding Tax Management record (null if unpaid).
 
+From Date / To Date filter on wtm.payment_date (the remittance date) where the
+invoice has one; unpaid invoices fall back to the invoice's own posting_date
+so they still appear when Paid Invoices Only is unchecked.
+
 Accounts resolved via is_tax_report_account + tax_report_type = "Withholding Tax".
 Nature of Transaction resolved per tax row via:
   pit.account_head → tabTax Withholding Account → tabTax Withholding Category.nature_of_transaction
-  This handles both the standard tax_withholding_category field and custom_withholding_1/2/3.
-Gross amount per row = base_tax_amount / rate × 100 (accurate per-row basis).
+  This is account-based, not category-field-based, so it works regardless of whether
+  the category came from an item's native tax_withholding_category or from our own
+  additional-withholding item fields.
+Gross Amount = tax_amount / rate * 100, i.e. the taxable base specific to THIS
+withholding row's category — not the whole invoice's gross value, since only
+the items subject to that category's rate should count (an invoice can carry
+items under different categories, or none at all, alongside the withheld ones).
+Nature of Transaction / Withholding Tax Management lookups use scalar subqueries
+(LIMIT 1) rather than JOINs, so a company that reuses one GL account across
+multiple Tax Withholding Categories (or has more than one WTM row per invoice/
+account) can never fan this query out into duplicate rows per invoice.
 Residential Status derived from supplier country (Kenya = Resident, else Non Resident).
 """
 
@@ -206,24 +219,38 @@ def get_data(filters):
             CASE
                 WHEN pit.rate > 0
                 THEN ROUND(pit.base_tax_amount_after_discount_amount * 100 / pit.rate, 2)
-                ELSE pi.base_tax_withholding_net_total
+                ELSE NULL
             END                                             AS gross_amount,
-            twcat.nature_of_transaction,
-            wtm.payment_date,
-            wtm.prn_number
+            (
+                SELECT twcat2.nature_of_transaction
+                FROM   `tabTax Withholding Account` twa2
+                JOIN   `tabTax Withholding Category` twcat2 ON twcat2.name = twa2.parent
+                WHERE  twa2.account = pit.account_head
+                  AND  twa2.company = pi.company
+                ORDER BY twa2.name
+                LIMIT  1
+            )                                               AS nature_of_transaction,
+            (
+                SELECT wtm2.payment_date
+                FROM   `tabWithholding Tax Management` wtm2
+                WHERE  wtm2.purchase_invoice    = pi.name
+                  AND  wtm2.withholding_account = pit.account_head
+                ORDER BY wtm2.name
+                LIMIT  1
+            )                                               AS payment_date,
+            (
+                SELECT wtm2.prn_number
+                FROM   `tabWithholding Tax Management` wtm2
+                WHERE  wtm2.purchase_invoice    = pi.name
+                  AND  wtm2.withholding_account = pit.account_head
+                ORDER BY wtm2.name
+                LIMIT  1
+            )                                               AS prn_number
         FROM `tabPurchase Invoice` pi
         JOIN `tabPurchase Taxes and Charges` pit
             ON  pit.parent       = pi.name
             AND pit.account_head IN ({acc_ph})
             AND pit.tax_amount   > 0
-        LEFT JOIN `tabTax Withholding Account` twa
-            ON  twa.account  = pit.account_head
-            AND twa.company  = pi.company
-        LEFT JOIN `tabTax Withholding Category` twcat
-            ON  twcat.name   = twa.parent
-        LEFT JOIN `tabWithholding Tax Management` wtm
-            ON  wtm.purchase_invoice    = pi.name
-            AND wtm.withholding_account = pit.account_head
         LEFT JOIN `tabSupplier` sup ON sup.name = pi.supplier
         WHERE pi.docstatus = 1
         {conditions}
@@ -259,6 +286,12 @@ def get_data(filters):
 # ---------------------------------------------------------------------------
 
 def build_conditions(filters):
+    """
+    from_date/to_date filter on wtm.payment_date (the remittance date) when
+    the invoice has one; unpaid invoices (wtm.payment_date is NULL, shown when
+    paid_only is unchecked) fall back to the invoice's own posting_date so
+    they aren't silently dropped from every date-filtered result.
+    """
     conditions = []
     params     = []
 
@@ -266,12 +299,26 @@ def build_conditions(filters):
         conditions.append("pi.company = %s")
         params.append(filters["company"])
 
+    wtm_payment_date = """
+        COALESCE(
+            (
+                SELECT wtm4.payment_date
+                FROM   `tabWithholding Tax Management` wtm4
+                WHERE  wtm4.purchase_invoice    = pi.name
+                  AND  wtm4.withholding_account = pit.account_head
+                ORDER BY wtm4.name
+                LIMIT  1
+            ),
+            pi.posting_date
+        )
+    """
+
     if filters.get("from_date"):
-        conditions.append("pi.posting_date >= %s")
+        conditions.append("{0} >= %s".format(wtm_payment_date))
         params.append(filters["from_date"])
 
     if filters.get("to_date"):
-        conditions.append("pi.posting_date <= %s")
+        conditions.append("{0} <= %s".format(wtm_payment_date))
         params.append(filters["to_date"])
 
     if filters.get("supplier"):
@@ -283,3 +330,41 @@ def build_conditions(filters):
 
     cond_str = ("AND " + " AND ".join(conditions)) if conditions else ""
     return cond_str, params
+
+
+# ---------------------------------------------------------------------------
+# XLSX download — generated server-side (frappe.utils.xlsxutils), same as
+# Frappe's own report Excel export. The client no longer needs a bundled
+# SheetJS/XLSX library, which was never actually available in the desk
+# frontend to begin with.
+# ---------------------------------------------------------------------------
+
+@frappe.whitelist()
+def download_xlsx(filters=None):
+    import json
+
+    from frappe.utils.xlsxutils import build_xlsx_response
+
+    if isinstance(filters, str):
+        filters = json.loads(filters)
+    filters = filters or {}
+    validate_filters(filters)
+
+    rows = get_data(filters)
+
+    headers = [
+        "Nature of Transaction", "Country", "Residential Status", "Date of Payment",
+        "PIN", "Supplier Name", "Invoice Number", "Email Address",
+        "Gross Amount", "Rate", "Tax Amount",
+    ]
+    field_map = [
+        "nature_of_transaction", "country", "residential_status", "payment_date",
+        "tax_id", "supplier_name", "bill_no", "email",
+        "gross_amount", "tax_rate", "tax_amount",
+    ]
+
+    data = [headers] + [[row.get(f) if row.get(f) is not None else "" for f in field_map] for row in rows]
+
+    from_date = filters.get("from_date") or ""
+    to_date = filters.get("to_date") or ""
+    build_xlsx_response(data, "Withholding_Tax_KRA_{0}_to_{1}".format(from_date, to_date))

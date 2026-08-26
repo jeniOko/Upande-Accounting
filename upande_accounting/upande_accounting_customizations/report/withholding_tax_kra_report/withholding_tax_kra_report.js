@@ -29,6 +29,7 @@ frappe.query_reports["Withholding Tax KRA Report"] = {
             fieldtype: "Date",
             default: frappe.datetime.month_start(),
             reqd: 1,
+            description: __("Filters by withholding payment date; unpaid invoices fall back to their own posting date."),
         },
         {
             fieldname: "to_date",
@@ -36,6 +37,7 @@ frappe.query_reports["Withholding Tax KRA Report"] = {
             fieldtype: "Date",
             default: frappe.datetime.month_end(),
             reqd: 1,
+            description: __("Filters by withholding payment date; unpaid invoices fall back to their own posting date."),
         },
         {
             fieldname: "paid_only",
@@ -110,6 +112,18 @@ function download_kra_report(report, format) {
         return;
     }
 
+    if (format === "xlsx") {
+        const filters = frappe.query_report.get_filter_values(true);
+        const args = { filters: JSON.stringify(filters) };
+        window.open(
+            frappe.urllib.get_full_url(
+                "/api/method/upande_accounting.upande_accounting_customizations.report.withholding_tax_kra_report.withholding_tax_kra_report.download_xlsx?" +
+                    $.param(args)
+            )
+        );
+        return;
+    }
+
     const headers = [
         "Nature of Transaction",
         "Country",
@@ -150,11 +164,7 @@ function download_kra_report(report, format) {
     const to_date   = frappe.query_report.get_filter_value("to_date")   || "";
     const filename  = `Withholding_Tax_KRA_${from_date}_to_${to_date}`;
 
-    if (format === "csv") {
-        download_csv(headers, rows, filename);
-    } else {
-        download_xlsx(headers, rows, filename);
-    }
+    download_csv(headers, rows, filename);
 }
 
 
@@ -171,48 +181,6 @@ function download_csv(headers, rows, filename) {
 
     const blob = new Blob([lines.join("\r\n")], { type: "text/csv;charset=utf-8;" });
     trigger_download(blob, filename + ".csv");
-}
-
-
-function download_xlsx(headers, rows, filename) {
-    // Use SheetJS (xlsx) which is available in Frappe's frontend bundle
-    // If not available, fall back to CSV with a notice.
-    if (typeof XLSX === "undefined") {
-        frappe.msgprint({
-            title: __("XLSX Not Available"),
-            message: __("SheetJS library not found. Downloading as CSV instead."),
-            indicator: "orange",
-        });
-        download_csv(headers, rows, filename);
-        return;
-    }
-
-    const ws_data = [headers, ...rows];
-    const ws      = XLSX.utils.aoa_to_sheet(ws_data);
-
-    // Column widths
-    ws["!cols"] = [
-        { wch: 45 }, // Nature of Transaction
-        { wch: 15 }, // Country
-        { wch: 16 }, // Residential Status
-        { wch: 14 }, // Date of Payment
-        { wch: 16 }, // PIN
-        { wch: 30 }, // Supplier Name
-        { wch: 20 }, // Invoice Number
-        { wch: 25 }, // Email
-        { wch: 16 }, // Gross Amount
-        { wch: 8  }, // Rate
-        { wch: 16 }, // Tax Amount
-    ];
-
-    const wb = XLSX.utils.book_new();
-    XLSX.utils.book_append_sheet(wb, ws, "Withholding Tax");
-
-    const wbout = XLSX.write(wb, { bookType: "xlsx", type: "array" });
-    const blob  = new Blob([wbout], {
-        type: "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
-    });
-    trigger_download(blob, filename + ".xlsx");
 }
 
 

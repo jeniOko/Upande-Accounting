@@ -11,8 +11,22 @@ their payment status, PRN numbers, and linked journal entries.
 Account detection uses the is_tax_report_account + tax_report_type fields
 on the Account doctype (tagged as WHTAX or WHVAT) instead of LIKE patterns.
 
-Nature of Transaction is pulled from the Tax Withholding Category linked
-to the supplier via the purchase invoice.
+Tax Withholding Category (and Nature of Transaction) is resolved per tax row
+via account_head → Tax Withholding Account → Tax Withholding Category, not
+from any field on the invoice header — the category can live on an item's
+native tax_withholding_category or on our own additional-withholding item
+fields, so account-based resolution works for both.
+
+Vatable Amount is derived per row as tax_amount / rate * 100 (KES) and the
+transaction-currency equivalent from tax_amount — the base specific to THIS
+withholding row's category, not the whole invoice's gross value, since an
+invoice can carry items under more than one category, or none at all,
+alongside the withheld ones.
+
+Tax Withholding Category and the Withholding Tax Management join both use
+scalar LIMIT 1 subqueries rather than JOINs, so a company that reuses one GL
+account across multiple Tax Withholding Categories, or has more than one WTM
+row per invoice/account, can never fan this query out into duplicate rows.
 """
 
 import frappe
@@ -186,13 +200,28 @@ def _get_category_for_account(account, company):
 
 def get_withholding_accounts(company, report_types=("WHTAX", "WHVAT")):
     """
-    Return { account_name: tax_report_type } for all accounts tagged as
-    WHTAX or WHVAT via the is_tax_report_account / tax_report_type fields.
+    Return { account_name: normalized_type } for all accounts tagged as WHTAX
+    or WHVAT via is_tax_report_account / tax_report_type.
+
+    Accepts both the human-readable Account Tax Report Type options
+    ('Withholding Tax' / 'Withholding VAT') and the legacy short-code values
+    ('WHTAX' / 'WHVAT') some accounts may still carry, same as the KRA
+    reports — the returned dict always normalizes back to the short code so
+    downstream display/filtering stays consistent regardless of which style
+    a given account was tagged with.
 
     Falls back to an empty dict if no accounts are tagged — the caller
     will warn the user.
     """
-    placeholders = ", ".join(["%s"] * len(report_types))
+    value_groups = {
+        "WHTAX": ("Withholding Tax", "WHTAX"),
+        "WHVAT": ("Withholding VAT", "WHVAT"),
+    }
+    all_values = []
+    for rt in report_types:
+        all_values.extend(value_groups.get(rt, (rt,)))
+
+    placeholders = ", ".join(["%s"] * len(all_values))
     sql = """
         SELECT name, tax_report_type
         FROM   `tabAccount`
@@ -204,12 +233,13 @@ def get_withholding_accounts(company, report_types=("WHTAX", "WHVAT")):
         ph=placeholders,
         company_cond="AND company = %s" if company else "",
     )
-    params = list(report_types)
+    params = all_values
     if company:
         params.append(company)
 
     rows = frappe.db.sql(sql, tuple(params), as_dict=True)
-    return {r.name: r.tax_report_type for r in rows}
+    reverse_map = {v: k for k, values in value_groups.items() for v in values}
+    return {r.name: reverse_map.get(r.tax_report_type, r.tax_report_type) for r in rows}
 
 
 # ---------------------------------------------------------------------------
@@ -285,9 +315,24 @@ def get_data(filters):
             pi.bill_no,
             pi.bill_date,
             pi.supplier,
-            pi.tax_withholding_category,
-            pi.tax_withholding_net_total                    AS base_amount,
-            pi.base_tax_withholding_net_total               AS base_net_amount,
+            (
+                SELECT twa2.parent
+                FROM   `tabTax Withholding Account` twa2
+                WHERE  twa2.account = pit.account_head
+                  AND  twa2.company = pi.company
+                ORDER BY twa2.name
+                LIMIT  1
+            )                                               AS tax_withholding_category,
+            CASE
+                WHEN pit.rate > 0
+                THEN ROUND(pit.tax_amount * 100 / pit.rate, 2)
+                ELSE NULL
+            END                                             AS base_amount,
+            CASE
+                WHEN pit.rate > 0
+                THEN ROUND(pit.base_tax_amount_after_discount_amount * 100 / pit.rate, 2)
+                ELSE NULL
+            END                                             AS base_net_amount,
             pi.currency                                     AS transaction_currency,
             pi.conversion_rate                              AS exchange_rate,
             sup.tax_id,
@@ -310,8 +355,14 @@ def get_data(filters):
         LEFT JOIN `tabSupplier` sup
             ON sup.name = pi.supplier
         LEFT JOIN `tabWithholding Tax Management` wtm
-            ON  wtm.purchase_invoice    = pi.name
-            AND wtm.withholding_account = pit.account_head
+            ON  wtm.name = (
+                SELECT wtm3.name
+                FROM   `tabWithholding Tax Management` wtm3
+                WHERE  wtm3.purchase_invoice    = pi.name
+                  AND  wtm3.withholding_account = pit.account_head
+                ORDER BY wtm3.name
+                LIMIT  1
+            )
         WHERE pi.docstatus = 1
         {conditions}
         ORDER BY pi.bill_date DESC, pi.name DESC

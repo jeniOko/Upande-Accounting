@@ -1,5 +1,5 @@
 app_name = "upande_accounting"
-app_title = "Upande Accounting Customizations"
+app_title = "Upande Accounting"
 app_publisher = "jeniffer@upande.com"
 app_description = "Upande erpnext customization for the accounting module"
 app_email = "okothjeniffer10@gmail.com"
@@ -41,15 +41,18 @@ doc_events = {
     },
     "Purchase Invoice": {
         "before_validate": [
-            "upande_accounting.utils.normalize_withholding_categories",
             "upande_accounting.utils.sync_is_service_item_on_pi",
             "upande_accounting.utils.sync_tds_from_item_tax_template",
+            "upande_accounting.utils.normalize_withholding_categories_on_items",
+            "upande_accounting.utils.sync_header_apply_tds_from_items",
+            "upande_accounting.utils.sync_additional_withholding_categories_to_items",
+        ],
+        "validate": [
             "upande_accounting.utils.remove_orphaned_withholding_tax_rows",
             "upande_accounting.utils.apply_additional_withholding_rows",
             "upande_accounting.utils.recalculate_withholding_tax_amounts",
-        ],
-        "validate": [
-            "upande_accounting.utils.validate_service_withholding_category",
+            "upande_accounting.utils.finalize_additional_withholding_totals",
+            "upande_accounting.utils.validate_additional_withholding_defaults",
             "upande_accounting.utils.set_withholding_tax_rates",
             "upande_accounting.utils.validate_withholding_in_taxes_table",
         ],
@@ -96,6 +99,7 @@ doc_events = {
 # include js in doctype views
 doctype_js = {
     "Item": "public/js/item.js",
+    "Journal Entry": "public/js/journal_entry.js",
     "Payment Entry": "public/js/payment_entry.js",
     "Purchase Invoice": "public/js/purchase_invoice.js",
     "Withholding Tax Management": "public/js/withholding_tax_management.js",

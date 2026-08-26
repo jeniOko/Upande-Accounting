@@ -19,9 +19,26 @@ Document type display labels:
 Source: GL Entry against the customer's receivable account(s).
 """
 
+import os
+from collections import OrderedDict
+
 import frappe
 from frappe import _
 from frappe.utils import flt, getdate, nowdate
+from frappe.utils.pdf import get_pdf
+
+
+# Exchange Gain Or Loss Journal Entries are system-generated forex revaluation/
+# rounding postings, not real customer transactions — exclude them everywhere
+# GL Entry is queried in this report (opening balance, transactions, ageing).
+EXCLUDE_FOREX_JE = """
+    AND NOT EXISTS (
+        SELECT 1 FROM `tabJournal Entry` je
+        WHERE je.name = gle.voucher_no
+          AND gle.voucher_type = 'Journal Entry'
+          AND je.voucher_type = 'Exchange Gain Or Loss'
+    )
+"""
 
 
 def execute(filters=None):
@@ -30,6 +47,55 @@ def execute(filters=None):
     columns = get_columns()
     data    = get_data(filters)
     return columns, data
+
+
+# ---------------------------------------------------------------------------
+# Print / PDF
+# ---------------------------------------------------------------------------
+#
+# The report's built-in "Print"/"PDF" buttons (in the Query Report view)
+# render html_format client-side with a tiny mustache-style templating engine
+# that does not understand real Jinja (no `{% elif %}`, `namespace()`,
+# filters, or `frappe.get_doc`). To keep those buttons on the system-default
+# tabular print (with column picking + letterhead, like any other report),
+# the fancy layout below is named *_print_template.html — not
+# customer_statement_of_account.html — so Frappe does not auto-load it as
+# html_format. It is rendered here instead, server-side via
+# frappe.render_template, and shipped to the browser as a ready-made PDF
+# through the "Print Statement" button.
+
+@frappe.whitelist()
+def download_statement_pdf(customer, from_date, to_date, company=None, show_ageing=1, include_draft=0, currency=None):
+    filters = frappe._dict({
+        "customer":      customer,
+        "from_date":     from_date,
+        "to_date":       to_date,
+        "company":       company,
+        "show_ageing":   show_ageing,
+        "include_draft": include_draft,
+    })
+    validate_filters(filters)
+    data = get_data(filters)
+
+    statement_currency = currency or (data[0]["currency"] if data else get_customer_currency(customer, company))
+
+    html_path = os.path.join(os.path.dirname(__file__), "customer_statement_of_account_print_template.html")
+    with open(html_path) as f:
+        template = f.read()
+
+    doc_context = frappe._dict({
+        "company":   company,
+        "customer":  customer,
+        "from_date": from_date,
+        "to_date":   to_date,
+        "currency":  statement_currency,
+    })
+
+    html = frappe.render_template(template, {"doc": doc_context, "data": data})
+
+    frappe.local.response.filename     = f"Statement-{customer}-{to_date}.pdf"
+    frappe.local.response.filecontent  = get_pdf(html)
+    frappe.local.response.type         = "download"
 
 
 # ---------------------------------------------------------------------------
@@ -261,9 +327,11 @@ def get_data(filters):
             AND gle.account  IN ({acc})
             AND gle.posting_date < %s
             AND gle.is_cancelled  = 0
+            {exclude_forex_je}
             {company_cond}
     """.format(
         acc=acc_placeholders,
+        exclude_forex_je=EXCLUDE_FOREX_JE,
         company_cond="AND gle.company = %s" if company else "",
     )
 
@@ -293,12 +361,14 @@ def get_data(filters):
             AND gle.account  IN ({acc})
             AND gle.posting_date BETWEEN %s AND %s
             AND gle.is_cancelled  = 0
+            {exclude_forex_je}
             {company_cond}
         ORDER BY
             gle.posting_date ASC,
             gle.creation ASC
     """.format(
         acc=acc_placeholders,
+        exclude_forex_je=EXCLUDE_FOREX_JE,
         company_cond="AND gle.company = %s" if company else "",
     )
 
@@ -317,6 +387,29 @@ def get_data(filters):
         )
     else:
         all_txns = list(transactions)
+
+    # Collapse GL-entry rows belonging to the same voucher into a single
+    # statement line. A Payment Entry reconciled against several invoices
+    # creates one GL Entry per allocation against the receivable account —
+    # without this, a single receipt would show up as one row per invoice
+    # it was allocated to instead of the total amount received.
+    grouped_txns = OrderedDict()
+    for txn in all_txns:
+        key = (txn.get("voucher_type"), txn.get("voucher_no"))
+        group = grouped_txns.get(key)
+        if group is None:
+            group = frappe._dict({
+                "posting_date": txn.get("posting_date"),
+                "voucher_type": txn.get("voucher_type"),
+                "voucher_no":   txn.get("voucher_no"),
+                "debit":        0,
+                "credit":       0,
+            })
+            grouped_txns[key] = group
+        group.debit  += flt(txn.get("debit"))
+        group.credit += flt(txn.get("credit"))
+
+    all_txns = list(grouped_txns.values())
 
     # ------------------------------------------------------------------
     # 3. Assemble rows
@@ -458,7 +551,7 @@ def get_ageing_summary(currency, customer=None, company=None, to_date=None, acco
                 voucher_type,
                 SUM(debit_in_account_currency)  AS total_debit,
                 SUM(credit_in_account_currency) AS total_credit
-            FROM `tabGL Entry`
+            FROM `tabGL Entry` gle
             WHERE
                 party_type   = 'Customer'
                 AND party    = %s
@@ -466,8 +559,9 @@ def get_ageing_summary(currency, customer=None, company=None, to_date=None, acco
                 AND posting_date <= %s
                 AND is_cancelled  = 0
                 AND company  = %s
+                {exclude_forex_je}
             GROUP BY voucher_no, voucher_type
-            """.format(acc_ph=acc_ph),
+            """.format(acc_ph=acc_ph, exclude_forex_je=EXCLUDE_FOREX_JE),
             tuple([customer] + accounts + [to_date, company]),
             as_dict=True,
         )

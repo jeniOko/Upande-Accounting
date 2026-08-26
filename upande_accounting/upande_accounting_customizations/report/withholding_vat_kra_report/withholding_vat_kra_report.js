@@ -22,14 +22,14 @@ frappe.query_reports["Withholding VAT KRA Report"] = {
 		},
 		{
 			fieldname: "from_date",
-			label: __("From Date"),
+			label: __("Payment Date From"),
 			fieldtype: "Date",
 			default: frappe.datetime.month_start(),
 			reqd: 1,
 		},
 		{
 			fieldname: "to_date",
-			label: __("To Date"),
+			label: __("Payment Date To"),
 			fieldtype: "Date",
 			default: frappe.datetime.month_end(),
 			reqd: 1,
@@ -97,27 +97,21 @@ function download_whvat_report(report, format) {
 		return;
 	}
 
-	const headers = [
-		"PIN",
-		"Supplier Name",
-		"Invoice Number",
-		"Invoice Date",
-		"Taxable Amount (KES)",
-		"WHT VAT Rate (%)",
-		"WHT VAT Amount (KES)",
-		"Withholding Payment Date",
-	];
+	if (format === "xlsx") {
+		const filters = frappe.query_report.get_filter_values(true);
+		const args = { filters: JSON.stringify(filters) };
+		window.open(
+			frappe.urllib.get_full_url(
+				"/api/method/upande_accounting.upande_accounting_customizations.report.withholding_vat_kra_report.withholding_vat_kra_report.download_xlsx?" +
+					$.param(args)
+			)
+		);
+		return;
+	}
 
-	const field_map = [
-		"tax_id",
-		"supplier_name",
-		"bill_no",
-		"bill_date",
-		"taxable_amount",
-		"tax_rate",
-		"tax_amount",
-		"payment_date",
-	];
+	// Column set stops at Taxable Amount — matches the server-side download_xlsx.
+	const headers = ["PIN", "Supplier Name", "Invoice Number", "Invoice Date", "Taxable Amount (KES)"];
+	const field_map = ["tax_id", "supplier_name", "bill_no", "bill_date", "taxable_amount"];
 
 	const rows = report.data.map((row) =>
 		field_map.map((f) => {
@@ -131,11 +125,7 @@ function download_whvat_report(report, format) {
 	const to_date = frappe.query_report.get_filter_value("to_date") || "";
 	const filename = `Withholding_VAT_KRA_${from_date}_to_${to_date}`;
 
-	if (format === "csv") {
-		download_csv(headers, rows, filename);
-	} else {
-		download_xlsx(headers, rows, filename);
-	}
+	download_csv(headers, rows, filename);
 }
 
 
@@ -152,42 +142,6 @@ function download_csv(headers, rows, filename) {
 
 	const blob = new Blob([lines.join("\r\n")], { type: "text/csv;charset=utf-8;" });
 	trigger_download(blob, filename + ".csv");
-}
-
-
-function download_xlsx(headers, rows, filename) {
-	if (typeof XLSX === "undefined") {
-		frappe.msgprint({
-			title: __("XLSX Not Available"),
-			message: __("SheetJS library not found. Downloading as CSV instead."),
-			indicator: "orange",
-		});
-		download_csv(headers, rows, filename);
-		return;
-	}
-
-	const ws_data = [headers, ...rows];
-	const ws = XLSX.utils.aoa_to_sheet(ws_data);
-
-	ws["!cols"] = [
-		{ wch: 16 }, // PIN
-		{ wch: 30 }, // Supplier Name
-		{ wch: 20 }, // Invoice Number
-		{ wch: 14 }, // Invoice Date
-		{ wch: 20 }, // Taxable Amount
-		{ wch: 14 }, // WHT VAT Rate
-		{ wch: 20 }, // WHT VAT Amount
-		{ wch: 22 }, // Withholding Payment Date
-	];
-
-	const wb = XLSX.utils.book_new();
-	XLSX.utils.book_append_sheet(wb, ws, "WHT VAT");
-
-	const wbout = XLSX.write(wb, { bookType: "xlsx", type: "array" });
-	const blob = new Blob([wbout], {
-		type: "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
-	});
-	trigger_download(blob, filename + ".xlsx");
 }
 
 

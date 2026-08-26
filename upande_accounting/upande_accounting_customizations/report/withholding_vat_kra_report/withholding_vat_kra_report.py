@@ -10,14 +10,30 @@ Only includes Purchase Invoices where the linked Withholding Tax Management
 record has payment_status = 'Paid', meaning the withheld VAT has already
 been remitted to KRA.
 
-Column order matches KRA upload format:
+The From Date / To Date filters apply to wtm.payment_date (the remittance
+date), not the invoice's posting/bill date — this is a filing report, so the
+relevant period is when the withholding was paid over to KRA.
+
+On-screen column order:
   PIN | Invoice Number | Invoice Date | Taxable Amount |
   WHT VAT Rate (%) | WHT VAT Amount | Payment Date | PRN Number
+
+The CSV/XLSX download only goes up to Taxable Amount (PIN | Supplier Name |
+Invoice Number | Invoice Date | Taxable Amount) — Rate/Tax Amount/Payment Date
+are on-screen only, for verification, not part of the KRA upload file.
 
 Accounts resolved via is_tax_report_account + tax_report_type IN
 ('Withholding VAT', 'WHVAT') on the Account master.
 
-Taxable Amount = base_tax_amount / (rate / 100) per invoice tax row.
+Taxable Amount = tax_amount / (rate / 100) per invoice tax row — the base
+specific to THIS category's rate, not the whole invoice's gross value, since
+only the items actually subject to that category should count.
+
+The join to Withholding Tax Management pins to a single deterministic row
+(via a LIMIT 1 subquery) rather than joining loosely on
+(purchase_invoice, withholding_account, payment_status='Paid'), so more than
+one Paid WTM row for the same invoice/account can never fan this query out
+into duplicate result rows.
 """
 
 import frappe
@@ -183,7 +199,7 @@ def get_data(filters):
             CASE
                 WHEN pit.rate > 0
                 THEN ROUND(pit.base_tax_amount_after_discount_amount * 100.0 / pit.rate, 2)
-                ELSE pi.base_tax_withholding_net_total
+                ELSE NULL
             END                                                 AS taxable_amount,
             wtm.payment_date,
             wtm.prn_number,
@@ -194,14 +210,20 @@ def get_data(filters):
             AND pit.account_head IN ({acc_ph})
             AND pit.tax_amount   > 0
         JOIN `tabWithholding Tax Management` wtm
-            ON  wtm.purchase_invoice    = pi.name
-            AND wtm.withholding_account = pit.account_head
-            AND wtm.payment_status      = 'Paid'
+            ON  wtm.name = (
+                SELECT wtm2.name
+                FROM   `tabWithholding Tax Management` wtm2
+                WHERE  wtm2.purchase_invoice    = pi.name
+                  AND  wtm2.withholding_account = pit.account_head
+                  AND  wtm2.payment_status      = 'Paid'
+                ORDER BY wtm2.name
+                LIMIT  1
+            )
         LEFT JOIN `tabSupplier` sup
             ON  sup.name = pi.supplier
         WHERE pi.docstatus = 1
         {conditions}
-        ORDER BY pi.bill_date ASC, pi.supplier ASC
+        ORDER BY wtm.payment_date ASC, pi.supplier ASC
     """.format(acc_ph=acc_ph, conditions=conditions)
 
     rows = frappe.db.sql(sql, tuple(accounts + params), as_dict=True)
@@ -228,6 +250,12 @@ def get_data(filters):
 # ---------------------------------------------------------------------------
 
 def build_conditions(filters):
+    """
+    from_date/to_date filter on wtm.payment_date, not the invoice's own date —
+    this is a KRA remittance filing report (only Paid WTM records are shown at
+    all), so the relevant period is when the withholding was actually paid
+    over to KRA, not when the underlying purchase invoice was raised.
+    """
     conditions = []
     params = []
 
@@ -236,11 +264,11 @@ def build_conditions(filters):
         params.append(filters["company"])
 
     if filters.get("from_date"):
-        conditions.append("pi.posting_date >= %s")
+        conditions.append("wtm.payment_date >= %s")
         params.append(filters["from_date"])
 
     if filters.get("to_date"):
-        conditions.append("pi.posting_date <= %s")
+        conditions.append("wtm.payment_date <= %s")
         params.append(filters["to_date"])
 
     if filters.get("supplier"):
@@ -249,3 +277,40 @@ def build_conditions(filters):
 
     cond_str = ("AND " + " AND ".join(conditions)) if conditions else ""
     return cond_str, params
+
+
+# ---------------------------------------------------------------------------
+# XLSX download — generated server-side (frappe.utils.xlsxutils), same as
+# Frappe's own report Excel export; no client-side XLSX library involved.
+#
+# Column set stops at Taxable Amount (PIN, Supplier Name, Invoice Number,
+# Invoice Date, Taxable Amount) — Rate/Tax Amount/Payment Date are shown on
+# screen for verification but aren't part of the download.
+# ---------------------------------------------------------------------------
+
+def _download_field_map():
+    return (
+        ["PIN", "Supplier Name", "Invoice Number", "Invoice Date", "Taxable Amount (KES)"],
+        ["tax_id", "supplier_name", "bill_no", "bill_date", "taxable_amount"],
+    )
+
+
+@frappe.whitelist()
+def download_xlsx(filters=None):
+    import json
+
+    from frappe.utils.xlsxutils import build_xlsx_response
+
+    if isinstance(filters, str):
+        filters = json.loads(filters)
+    filters = filters or {}
+    validate_filters(filters)
+
+    rows = get_data(filters)
+    headers, field_map = _download_field_map()
+
+    data = [headers] + [[row.get(f) if row.get(f) is not None else "" for f in field_map] for row in rows]
+
+    from_date = filters.get("from_date") or ""
+    to_date = filters.get("to_date") or ""
+    build_xlsx_response(data, "Withholding_VAT_KRA_{0}_to_{1}".format(from_date, to_date))

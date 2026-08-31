@@ -24,6 +24,10 @@ item-level base the rate was applied to —
     custom_is_service_item=1.
   - All-item categories      → net_amount summed over items flagged
     apply_tds=1.
+An item may override this default per category via custom_override_withholding /
+custom_withholding_action / custom_withholding_override_category — see
+upande_accounting.utils.category_base_from_item_rows, the same function that
+calculates the actual withholding on the invoice.
 The rate is looked up from the Tax Withholding Category (as of the invoice's
 posting date) rather than trusted from the tax row's own `rate` field, which
 is 0 on older/legacy rows and would otherwise force the taxable amount into
@@ -37,7 +41,11 @@ import frappe
 from frappe import _
 from frappe.utils import flt
 
-from upande_accounting.utils import _get_withholding_rate_for_date
+from upande_accounting.utils import (
+    _get_withholding_rate_for_date,
+    category_base_from_item_rows,
+    WITHHOLDING_OVERRIDE_FIELDS,
+)
 
 
 def execute(filters=None):
@@ -262,7 +270,7 @@ def _build_result(rows):
         ):
             category_meta[r.name] = r
 
-    item_bases = _get_invoice_item_bases(list(invoice_categories.keys()))
+    items_by_invoice = _get_invoice_items(list(invoice_categories.keys()))
 
     result = []
     for row in rows:
@@ -282,8 +290,14 @@ def _build_result(rows):
 
         meta = category_meta.get(matched_category)
         is_service_only = bool(meta and meta.custom_applicable_for_services)
-        bases = item_bases.get(invoice_number, {"all_tds_base_net": 0.0, "service_tds_base_net": 0.0})
-        base = bases["service_tds_base_net"] if is_service_only else bases["all_tds_base_net"]
+        base = 0.0
+        if matched_category:
+            base = category_base_from_item_rows(
+                items_by_invoice.get(invoice_number, []),
+                matched_category,
+                is_service_only,
+                amount_field="base_net_amount",
+            )
 
         if not base:
             if rate:
@@ -306,34 +320,24 @@ def _build_result(rows):
     return result
 
 
-def _get_invoice_item_bases(invoice_numbers):
+def _get_invoice_items(invoice_numbers):
     """
-    Per-invoice withholding bases, in base (KES) currency — matches the
-    currency of tax_amount above (pit.base_tax_amount_after_discount_amount).
+    Per-invoice item rows, with the fields category_base_from_item_rows needs, in
+    base (KES) currency — matches the currency of tax_amount above
+    (pit.base_tax_amount_after_discount_amount).
     """
     if not invoice_numbers:
         return {}
 
-    rows = frappe.db.sql(
-        """
-        SELECT
-            parent AS invoice_number,
-            SUM(IF(apply_tds = 1, base_net_amount, 0))              AS all_tds_base_net,
-            SUM(IF(custom_is_service_item = 1, base_net_amount, 0)) AS service_tds_base_net
-        FROM `tabPurchase Invoice Item`
-        WHERE parent IN ({ph})
-        GROUP BY parent
-        """.format(ph=", ".join(["%s"] * len(invoice_numbers))),
-        tuple(invoice_numbers),
-        as_dict=True,
+    rows = frappe.get_all(
+        "Purchase Invoice Item",
+        filters={"parent": ["in", invoice_numbers]},
+        fields=["parent", "base_net_amount", *WITHHOLDING_OVERRIDE_FIELDS],
     )
-    return {
-        r.invoice_number: {
-            "all_tds_base_net":     flt(r.all_tds_base_net),
-            "service_tds_base_net": flt(r.service_tds_base_net),
-        }
-        for r in rows
-    }
+    items_by_invoice = {}
+    for r in rows:
+        items_by_invoice.setdefault(r.parent, []).append(r)
+    return items_by_invoice
 
 
 # ---------------------------------------------------------------------------

@@ -51,7 +51,7 @@ doc_events = {
         ],
         "validate": [
             "upande_accounting.utils.validate_service_withholding_category",
-            "upande_accounting.utils.recalculate_withholding_tax_amounts",
+            "upande_accounting.utils.finalize_withholding_tax_rows",
             "upande_accounting.utils.set_withholding_tax_rates",
             "upande_accounting.utils.validate_withholding_in_taxes_table",
         ],

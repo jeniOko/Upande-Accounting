@@ -49,11 +49,11 @@ def normalize_withholding_categories(doc, _method=None):
 
     frappe.throw(
         _(
-            "Withholding category <b>{0}</b> is applicable for services only and cannot "
-            "remain in the standard field — all custom withholding fields are occupied. "
-            "Please free up one custom field to make room."
+            "<b>{0}</b> only applies to services, so it can't stay in the main Withholding "
+            "Category field, and all 3 Custom Withholding fields are already full. Remove one "
+            "of the Custom Withholding categories to make room, then try again."
         ).format(std_cat),
-        title=_("Withholding Category Conflict"),
+        title=_("No Room For This Withholding Category"),
     )
 
 
@@ -200,6 +200,42 @@ def _get_category_base_net(doc, cat_name):
     return category_base_from_item_rows(doc.items or [], cat_name, is_service_only, amount_field="net_amount")
 
 
+def _get_first_withholding_account(cat_name, company):
+    """Return the first account configured against a Tax Withholding Category, or None."""
+    wh_accounts = frappe.get_all(
+        "Tax Withholding Account",
+        filters={"parent": cat_name, "company": company},
+        fields=["account"],
+        limit=1,
+    )
+    return wh_accounts[0].account if wh_accounts and wh_accounts[0].account else None
+
+
+def _build_withholding_tax_row(doc, cat_name, account, rate, base):
+    """Build a Purchase Taxes and Charges row dict for a withholding category."""
+    tax_amount = round(base * rate / 100, 2)
+    base_tax_amount = round(tax_amount * (doc.conversion_rate or 1), 2)
+
+    row = {
+        "charge_type": "Actual",
+        "add_deduct_tax": "Deduct",
+        "category": "Total",
+        "account_head": account,
+        "description": "Withholding Tax - {}".format(cat_name),
+        "rate": rate,
+        "tax_amount": tax_amount,
+        "tax_amount_after_discount_amount": tax_amount,
+        "base_tax_amount": base_tax_amount,
+        "base_tax_amount_after_discount_amount": base_tax_amount,
+    }
+
+    for dim in frappe.get_all("Accounting Dimension", fields=["fieldname"]):
+        if doc.get(dim.fieldname):
+            row[dim.fieldname] = doc.get(dim.fieldname)
+
+    return row
+
+
 def _get_withholding_rate_for_date(category_name, posting_date):
     """Return the applicable withholding rate for a category on the given posting date."""
     try:
@@ -312,22 +348,22 @@ def validate_item_withholding_overrides(doc, _method=None):
         if not action or not category:
             frappe.throw(
                 _(
-                    "Row #{0}: When <b>Override Withholding Treatment</b> is checked, both "
-                    "the withholding action (Apply/Ignore) and the Withholding Category "
-                    "must be set."
+                    "Row #{0}: you've checked <b>Override Withholding Treatment</b> but haven't "
+                    "finished setting it up. Please choose both an action (<b>Apply</b> or "
+                    "<b>Ignore</b>) and a <b>Withholding Category</b> for this item."
                 ).format(row.idx),
-                title=_("Incomplete Withholding Override"),
+                title=_("Withholding Override Not Finished"),
             )
 
         if category not in active_categories:
             frappe.throw(
                 _(
-                    "Row #{0}: Withholding override references category <b>{1}</b>, which is "
-                    "not active on this invoice. Select an active withholding category "
-                    "(Tax Withholding Category or one of the Custom Withholding fields), or "
-                    "uncheck the override for this item."
+                    "Row #{0}: <b>{1}</b> isn't one of the withholding categories selected on "
+                    "this invoice, so the override can't take effect. Either pick a category "
+                    "that's already selected above (Withholding Category or one of the Custom "
+                    "Withholding fields), or turn off the override for this item."
                 ).format(row.idx, category),
-                title=_("Invalid Withholding Override"),
+                title=_("Withholding Category Not On This Invoice"),
             )
 
 
@@ -368,9 +404,12 @@ def apply_additional_withholding_rows(doc, _method=None):
       if no items have apply_tds=1; we guarantee the row exists so that
       recalculate_withholding_tax_amounts can set the correct service-based amount.
 
-    Per-category base amounts (and therefore whether a service-only row is skipped)
-    come from _get_category_base_net, which honors item-level withholding overrides —
-    see validate_item_withholding_overrides / _get_category_base_net.
+    A category's row is only added when its override-aware base (_get_category_base_net,
+    which honors custom_override_withholding — see validate_item_withholding_overrides) is
+    nonzero. The plain non-service tax_withholding_category case isn't handled here at all —
+    it's entirely ERPNext's own doing, and finalize_withholding_tax_rows reconciles it (and
+    every other category) again after ERPNext's calculation, since ERPNext's own logic can
+    delete/miscalculate that row without knowing about item-level overrides.
 
     Must run before recalculate_withholding_tax_amounts.
     """
@@ -399,86 +438,48 @@ def apply_additional_withholding_rows(doc, _method=None):
     existing_accounts = {t.account_head for t in (doc.taxes or [])}
 
     for cat_name in cats_to_ensure:
-        wh_accounts = frappe.get_all(
-            "Tax Withholding Account",
-            filters={"parent": cat_name, "company": doc.company},
-            fields=["account"],
-            limit=1,
-        )
-        if not wh_accounts or not wh_accounts[0].account:
+        account = _get_first_withholding_account(cat_name, doc.company)
+        if not account:
             frappe.throw(
                 _(
-                    "No withholding account configured for <b>{0}</b> for company <b>{1}</b>. "
-                    "Please set it up in the Tax Withholding Category."
+                    "<b>{0}</b> has no withholding account set up for company <b>{1}</b>. "
+                    "Open the Tax Withholding Category and add one before using it here."
                 ).format(cat_name, doc.company),
-                title=_("Withholding Account Missing"),
+                title=_("Withholding Account Not Set Up"),
             )
 
-        account = wh_accounts[0].account
         if account in existing_accounts:
             continue
 
         rate = _get_withholding_rate_for_date(cat_name, doc.posting_date) or 0
-        is_service_only = _is_service_only_category(cat_name)
         base = _get_category_base_net(doc, cat_name)
 
-        if is_service_only and base == 0:
+        if base == 0:
             continue
 
-        tax_amount = round(base * rate / 100, 2)
-        base_tax_amount = round(tax_amount * (doc.conversion_rate or 1), 2)
-
-        row = {
-            "charge_type": "Actual",
-            "add_deduct_tax": "Deduct",
-            "category": "Total",
-            "account_head": account,
-            "description": "Withholding Tax - {}".format(cat_name),
-            "rate": rate,
-            "tax_amount": tax_amount,
-            "tax_amount_after_discount_amount": tax_amount,
-            "base_tax_amount": base_tax_amount,
-            "base_tax_amount_after_discount_amount": base_tax_amount,
-        }
-
-        for dim in frappe.get_all("Accounting Dimension", fields=["fieldname"]):
-            if doc.get(dim.fieldname):
-                row[dim.fieldname] = doc.get(dim.fieldname)
-
-        doc.append("taxes", row)
+        doc.append("taxes", _build_withholding_tax_row(doc, cat_name, account, rate, base))
         existing_accounts.add(account)
 
 
 def recalculate_withholding_tax_amounts(doc, _method=None):
     """
-    Recalculate tax_amount on every withholding row from the current item totals.
+    Recalculate tax_amount on every withholding row from the current item totals, dropping
+    a row entirely once its base reaches 0 (nothing left to withhold on).
 
-    Service-only categories (custom_applicable_for_services = 1):
-        base = net_amount sum for items where custom_is_service_item=1 (apply_tds not required)
-        If base = 0 (no qualifying service items), the row is REMOVED.
-
-    All-item categories:
-        base = net_amount sum for items where apply_tds=1
-
-    In both cases, an item's custom_override_withholding (Apply/Ignore, targeting this
-    exact category) overrides the default inclusion rule for that item — see
-    _get_category_base_net, which computes the base per category.
+    base = net_amount sum for items qualifying for the category (service items for a
+    service-only category, apply_tds items otherwise), adjusted by any item's
+    custom_override_withholding targeting that exact category — see _get_category_base_net.
 
     Detects withholding rows via account_category_map (does not depend on the
     is_tax_withholding_account flag on the row, which is absent for rows added via
     the custom multiple-withholding fields).
 
-    Runs twice in the doctype lifecycle (see hooks.py):
-      - before_validate: corrects the service-only / custom_withholding_1-3 rows this
-        app itself appends, before ERPNext's calculate_taxes_and_totals() sums the doc.
-      - validate (after ERPNext's own PurchaseInvoice.set_tax_withholding()): the plain
-        single-category case (tax_withholding_category, non-service) is entirely computed
-        by ERPNext's native logic, which knows nothing about item-level overrides. Re-running
-        here corrects that row too, so an override on a plain non-service category isn't a
-        silent no-op. Because this second pass runs after ERPNext already summed totals from
-        the uncorrected amount, doc.calculate_taxes_and_totals() is invoked again whenever a
-        row actually changes — the same pattern ERPNext's own set_tax_withholding() uses
-        after it mutates the taxes table.
+    Runs in before_validate, correcting the service-only / custom_withholding_1-3 rows this
+    app itself appends (via apply_additional_withholding_rows), before ERPNext's
+    calculate_taxes_and_totals() sums the doc. The plain non-service tax_withholding_category
+    row is entirely ERPNext's own doing and isn't touched here — see
+    finalize_withholding_tax_rows, which reconciles every category again after ERPNext's own
+    calculation has run.
     """
     taxes = doc.get("taxes") or []
     categories = _get_active_withholding_categories(doc)
@@ -504,11 +505,10 @@ def recalculate_withholding_tax_amounts(doc, _method=None):
             continue
 
         tax.rate = rate
-        is_service_only = _is_service_only_category(cat_name)
         base = _get_category_base_net(doc, cat_name)
 
-        if is_service_only and base == 0:
-            modified = True  # drop this row — no qualifying service items
+        if base == 0:
+            modified = True  # drop this row — nothing qualifies any more
         else:
             new_amount = round(base * rate / 100, 2)
             base_amount = round(new_amount * (doc.conversion_rate or 1), 2)
@@ -524,7 +524,6 @@ def recalculate_withholding_tax_amounts(doc, _method=None):
         doc.taxes = new_taxes
         for i, t in enumerate(doc.taxes):
             t.idx = i + 1
-        doc.calculate_taxes_and_totals()
 
 
 # ---------------------------------------------------------------------------
@@ -540,6 +539,102 @@ def set_gross_amount(doc, _method=None):
 # ---------------------------------------------------------------------------
 # validate hooks — run AFTER ERPNext's calculate_taxes_and_totals()
 # ---------------------------------------------------------------------------
+
+def finalize_withholding_tax_rows(doc, _method=None):
+    """
+    Reconcile every active withholding category's tax row against the override-aware base,
+    after ERPNext's own PurchaseInvoice.set_tax_withholding() has already run.
+
+    Why this has to run again here: ERPNext's native single-category calculation (the plain
+    tax_withholding_category field, when it isn't service-only) sums doc.tax_withholding_net_total
+    purely from items with apply_tds=1 — it has no idea custom_override_withholding exists. In
+    particular, if an item is only included in a category because of an "Apply" override (its
+    apply_tds is 0), ERPNext computes a base of 0, and then actively DELETES the $0 row it just
+    built. That happens inside ERPNext's own validate(), after this app's before_validate hooks
+    (apply_additional_withholding_rows / recalculate_withholding_tax_amounts) already ran — so
+    without this second pass, the "Apply" override would silently have no effect at all.
+
+    For every category active on the document:
+      - a row exists and its override-aware base is still > 0  -> correct its rate/tax_amount.
+      - a row exists but its base is now 0                     -> remove it.
+      - no row exists yet but its base is > 0                  -> add one (the "Apply" fix).
+
+    doc.calculate_taxes_and_totals() is re-run whenever the taxes table actually changes here —
+    the same thing ERPNext's own set_tax_withholding() does after it mutates the table — so
+    grand_total / outstanding_amount reflect the corrected amount, not ERPNext's original one.
+    """
+    categories = _get_active_withholding_categories(doc)
+    if not categories:
+        return
+
+    account_category_map = _build_account_category_map(categories, doc.company)
+    if not account_category_map:
+        return
+
+    modified = False
+
+    # 1. Correct or drop existing rows.
+    kept_taxes = []
+    for tax in doc.get("taxes") or []:
+        cat_name = account_category_map.get(tax.account_head)
+        if not cat_name:
+            kept_taxes.append(tax)
+            continue
+
+        rate = _get_withholding_rate_for_date(cat_name, doc.posting_date)
+        if not rate:
+            kept_taxes.append(tax)
+            continue
+
+        base = _get_category_base_net(doc, cat_name)
+        if base == 0:
+            modified = True  # nothing left to withhold on — drop the row
+            continue
+
+        tax.rate = rate
+        new_amount = round(base * rate / 100, 2)
+        base_amount = round(new_amount * (doc.conversion_rate or 1), 2)
+        if tax.tax_amount != new_amount:
+            tax.tax_amount = new_amount
+            tax.tax_amount_after_discount_amount = new_amount
+            tax.base_tax_amount = base_amount
+            tax.base_tax_amount_after_discount_amount = base_amount
+            modified = True
+        kept_taxes.append(tax)
+
+    doc.taxes = kept_taxes
+
+    # 2. Add a row for any active category with a nonzero base that doesn't have one yet —
+    # this is what rescues an "Apply" override ERPNext's own zero-base cleanup just deleted.
+    accounts_with_rows = {t.account_head for t in doc.taxes}
+    categories_with_rows = {account_category_map.get(t.account_head) for t in doc.taxes}
+
+    for cat_name in categories:
+        if cat_name in categories_with_rows:
+            continue
+
+        base = _get_category_base_net(doc, cat_name)
+        if base <= 0:
+            continue
+
+        account = _get_first_withholding_account(cat_name, doc.company)
+        if not account or account in accounts_with_rows:
+            continue
+
+        rate = _get_withholding_rate_for_date(cat_name, doc.posting_date)
+        if not rate:
+            continue
+
+        doc.append("taxes", _build_withholding_tax_row(doc, cat_name, account, rate, base))
+        accounts_with_rows.add(account)
+        categories_with_rows.add(cat_name)
+        modified = True
+
+    if modified:
+        for i, t in enumerate(doc.taxes):
+            t.idx = i + 1
+        doc.calculate_taxes_and_totals()
+
 
 def validate_service_withholding_category(doc, _method=None):
     """
@@ -567,12 +662,12 @@ def validate_service_withholding_category(doc, _method=None):
         cats_html = ", ".join("<b>{}</b>".format(c) for c in non_qualifying_cats)
         frappe.msgprint(
             _(
-                "No item in this invoice is applicable to withholding (after item-level "
-                "overrides, if any). The following withholding categories apply to service "
-                "items only: {0}. Withholding will not be calculated for these categories."
+                "{0} won't be withheld on this invoice — no items qualify for it. These "
+                "categories only apply to service items, so check that a service item is on "
+                "the invoice, or that an item's withholding override isn't set to Ignore it."
             ).format(cats_html),
-            title=_("No Applicable Items for Withholding"),
-            indicator="orange",
+            title=_("Withholding Not Applied"),
+            indicator="blue",
         )
 
 
@@ -620,17 +715,19 @@ def validate_withholding_in_taxes_table(doc, _method=None):
         if tax.charge_type != "Actual":
             frappe.throw(
                 _(
-                    "Withholding Tax row <b>{0}</b> must use charge type <b>Actual</b>. "
-                    "Current charge type is <b>{1}</b>. Please update the taxes row."
+                    "The withholding tax row for <b>{0}</b> has the wrong charge type — it's "
+                    "set to <b>{1}</b> but needs to be <b>Actual</b>. Please fix it in the "
+                    "Taxes and Charges table."
                 ).format(tax.account_head, tax.charge_type),
-                title=_("Invalid Withholding Tax Setup"),
+                title=_("Wrong Charge Type On Withholding Row"),
             )
 
         if tax.add_deduct_tax != "Deduct":
             frappe.throw(
                 _(
-                    "Withholding Tax row <b>{0}</b> must be set to <b>Deduct</b>. "
-                    "Current setting is <b>{1}</b>. Please update the taxes row."
+                    "The withholding tax row for <b>{0}</b> is set to <b>{1}</b>, but "
+                    "withholding tax rows must be set to <b>Deduct</b>. Please fix it in the "
+                    "Taxes and Charges table."
                 ).format(tax.account_head, tax.add_deduct_tax),
-                title=_("Invalid Withholding Tax Setup"),
+                title=_("Wrong Setting On Withholding Row"),
             )

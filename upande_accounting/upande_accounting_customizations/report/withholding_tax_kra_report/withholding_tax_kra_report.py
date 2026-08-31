@@ -31,6 +31,10 @@ invoice's overall gross/net total:
   - Service-only categories → sum of net_amount for items flagged
     custom_is_service_item=1.
   - All-item categories      → sum of net_amount for items flagged apply_tds=1.
+An item may override this default per category via custom_override_withholding /
+custom_withholding_action / custom_withholding_override_category — see
+upande_accounting.utils.category_base_from_item_rows, the same function that
+calculates the actual withholding on the invoice.
 Only when no category can be matched (legacy/manually edited rows) does the
 report fall back to reversing the base out of tax_amount / rate, and finally to
 the invoice's base_tax_withholding_net_total.
@@ -43,7 +47,11 @@ import frappe
 from frappe import _
 from frappe.utils import flt
 
-from upande_accounting.utils import _get_withholding_rate_for_date
+from upande_accounting.utils import (
+    _get_withholding_rate_for_date,
+    category_base_from_item_rows,
+    WITHHOLDING_OVERRIDE_FIELDS,
+)
 
 
 def execute(filters=None):
@@ -297,7 +305,7 @@ def _build_result(rows):
             category_meta[r.name] = r
 
     invoice_numbers = list(invoice_categories.keys())
-    item_bases = _get_invoice_item_bases(invoice_numbers)
+    items_by_invoice = _get_invoice_items(invoice_numbers)
 
     result = []
     for row in rows:
@@ -320,8 +328,14 @@ def _build_result(rows):
             rate = flt(row.get("stored_rate"))
 
         is_service_only = bool(meta and meta.custom_applicable_for_services)
-        bases = item_bases.get(invoice_number, {"all_tds_net": 0.0, "service_tds_net": 0.0})
-        base = bases["service_tds_net"] if is_service_only else bases["all_tds_net"]
+        base = 0.0
+        if matched_category:
+            base = category_base_from_item_rows(
+                items_by_invoice.get(invoice_number, []),
+                matched_category,
+                is_service_only,
+                amount_field="base_net_amount",
+            )
 
         if not base:
             # No matching category, or the item flags weren't set (legacy data) —
@@ -352,12 +366,11 @@ def _build_result(rows):
     return result
 
 
-def _get_invoice_item_bases(invoice_numbers):
+def _get_invoice_items(invoice_numbers):
     """
-    Per-invoice withholding bases, matching the calc in
-    upande_accounting.utils.recalculate_withholding_tax_amounts:
-      all_tds_net      — net_amount summed over items with apply_tds=1
-      service_tds_net  — net_amount summed over items with custom_is_service_item=1
+    Per-invoice item rows, with the fields category_base_from_item_rows needs.
+    Matches the calc in upande_accounting.utils.recalculate_withholding_tax_amounts,
+    including per-item withholding overrides.
 
     Uses base_net_amount (company currency) rather than net_amount (document
     currency) because tax_amount/gross_amount in this report are both taken
@@ -367,23 +380,15 @@ def _get_invoice_item_bases(invoice_numbers):
     if not invoice_numbers:
         return {}
 
-    rows = frappe.db.sql(
-        """
-        SELECT
-            parent AS invoice_number,
-            SUM(IF(apply_tds = 1, base_net_amount, 0))              AS all_tds_net,
-            SUM(IF(custom_is_service_item = 1, base_net_amount, 0)) AS service_tds_net
-        FROM `tabPurchase Invoice Item`
-        WHERE parent IN ({ph})
-        GROUP BY parent
-        """.format(ph=", ".join(["%s"] * len(invoice_numbers))),
-        tuple(invoice_numbers),
-        as_dict=True,
+    rows = frappe.get_all(
+        "Purchase Invoice Item",
+        filters={"parent": ["in", invoice_numbers]},
+        fields=["parent", "base_net_amount", *WITHHOLDING_OVERRIDE_FIELDS],
     )
-    return {
-        r.invoice_number: {"all_tds_net": flt(r.all_tds_net), "service_tds_net": flt(r.service_tds_net)}
-        for r in rows
-    }
+    items_by_invoice = {}
+    for r in rows:
+        items_by_invoice.setdefault(r.parent, []).append(r)
+    return items_by_invoice
 
 
 # ---------------------------------------------------------------------------

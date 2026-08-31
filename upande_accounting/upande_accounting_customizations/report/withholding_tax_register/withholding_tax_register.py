@@ -24,6 +24,7 @@ from upande_accounting.withholding_tax_management import (
     get_withholding_accounts,
     resolve_withholding_category,
 )
+from upande_accounting.utils import category_base_from_item_rows, WITHHOLDING_OVERRIDE_FIELDS
 
 
 # ---------------------------------------------------------------------------
@@ -195,39 +196,29 @@ def get_columns():
 #     custom_is_service_item=1.
 #   - All-item categories      → net_amount summed over items flagged
 #     apply_tds=1.
+# An item may override this default per category via custom_override_withholding /
+# custom_withholding_action / custom_withholding_override_category (see
+# upande_accounting.utils.category_base_from_item_rows) — the same function that
+# calculates the actual withholding on the invoice, so this report can never disagree
+# with what was really withheld.
 # Falls back to the invoice's own tax_withholding_net_total when no category
 # can be matched (legacy/manually edited rows).
 # ---------------------------------------------------------------------------
 
-def _get_invoice_item_bases(invoice_numbers):
-    """Per-invoice withholding bases, in both transaction and base (KES) currency."""
+def _get_invoice_items(invoice_numbers):
+    """Per-invoice item rows, with the fields category_base_from_item_rows needs."""
     if not invoice_numbers:
         return {}
 
-    rows = frappe.db.sql(
-        """
-        SELECT
-            parent AS invoice_number,
-            SUM(IF(apply_tds = 1, net_amount, 0))                   AS all_tds_net,
-            SUM(IF(custom_is_service_item = 1, net_amount, 0))      AS service_tds_net,
-            SUM(IF(apply_tds = 1, base_net_amount, 0))              AS all_tds_base_net,
-            SUM(IF(custom_is_service_item = 1, base_net_amount, 0)) AS service_tds_base_net
-        FROM `tabPurchase Invoice Item`
-        WHERE parent IN ({ph})
-        GROUP BY parent
-        """.format(ph=", ".join(["%s"] * len(invoice_numbers))),
-        tuple(invoice_numbers),
-        as_dict=True,
+    rows = frappe.get_all(
+        "Purchase Invoice Item",
+        filters={"parent": ["in", invoice_numbers]},
+        fields=["parent", "net_amount", "base_net_amount", *WITHHOLDING_OVERRIDE_FIELDS],
     )
-    return {
-        r.invoice_number: {
-            "all_tds_net":          flt(r.all_tds_net),
-            "service_tds_net":      flt(r.service_tds_net),
-            "all_tds_base_net":     flt(r.all_tds_base_net),
-            "service_tds_base_net": flt(r.service_tds_base_net),
-        }
-        for r in rows
-    }
+    items_by_invoice = defaultdict(list)
+    for r in rows:
+        items_by_invoice[r.parent].append(r)
+    return items_by_invoice
 
 
 # ---------------------------------------------------------------------------
@@ -361,7 +352,7 @@ def get_data(filters):
         ):
             category_meta[r.name] = r
 
-    item_bases = _get_invoice_item_bases(list(invoice_categories.keys()))
+    items_by_invoice = _get_invoice_items(list(invoice_categories.keys()))
 
     for row in rows:
         # Payment status default
@@ -382,15 +373,22 @@ def get_data(filters):
         row["nature_of_transaction"] = (meta.nature_of_transaction if meta else None) or ""
 
         # Taxable amount = the actual item-level base the rate was applied to,
-        # not the invoice's overall gross/net total.
+        # not the invoice's overall gross/net total. Only computed when a category
+        # could actually be matched — otherwise there's nothing to key the per-item
+        # override fields off of, so keep the SQL fallback below.
         is_service_only = bool(meta and meta.custom_applicable_for_services)
-        bases = item_bases.get(row["invoice_number"], {})
-        base_amount = bases.get("service_tds_net" if is_service_only else "all_tds_net")
-        base_net_amount = bases.get("service_tds_base_net" if is_service_only else "all_tds_base_net")
-        if base_amount:
-            row["base_amount"] = base_amount
-        if base_net_amount:
-            row["base_net_amount"] = base_net_amount
+        if matched_category:
+            invoice_items = items_by_invoice.get(row["invoice_number"], [])
+            base_amount = category_base_from_item_rows(
+                invoice_items, matched_category, is_service_only, amount_field="net_amount"
+            )
+            base_net_amount = category_base_from_item_rows(
+                invoice_items, matched_category, is_service_only, amount_field="base_net_amount"
+            )
+            if base_amount:
+                row["base_amount"] = base_amount
+            if base_net_amount:
+                row["base_net_amount"] = base_net_amount
         # else: keep the SQL fallback (tax_withholding_net_total) already on the row
 
         # Residential status derived from supplier country

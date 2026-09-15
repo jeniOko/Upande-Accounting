@@ -35,7 +35,7 @@ function toggleAgeingRows(show) {
 }
 
 
-frappe.query_reports["Supplier Statement Of Account"] = {
+frappe.query_reports["Supplier Ledger"] = {
 
     onload: function (report) {
         // Top-right button: back to summary with current dates
@@ -76,7 +76,7 @@ frappe.query_reports["Supplier Statement Of Account"] = {
 
             window.open(
                 "/api/method/upande_accounting.upande_accounting_customizations.report."
-                + "supplier_statement_of_account.supplier_statement_of_account.download_statement_pdf?"
+                + "supplier_ledger.supplier_ledger.download_statement_pdf?"
                 + params.toString()
             );
         });
@@ -230,8 +230,8 @@ frappe.query_reports["Supplier Statement Of Account"] = {
         //    the DataTable finish painting all rows into the DOM.
         setTimeout(() => {
             const show = frappe.query_report.get_filter_value("show_ageing");
-            // Treat undefined/null as "show" (default 1)
-            toggleAgeingRows(show === undefined || show === null || show == 1);
+            // Ageing is opt-in — only show when the checkbox is actually on.
+            toggleAgeingRows(show == 1);
         }, 100);
 
         // 2. Row highlight on checkbox selection

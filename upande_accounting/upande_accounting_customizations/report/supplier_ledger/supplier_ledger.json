@@ -14,11 +14,11 @@
  "modified": "2026-07-07 00:00:00.000000",
  "modified_by": "Administrator",
  "module": "Upande Accounting Customizations",
- "name": "Supplier Statement Of Account",
+ "name": "Supplier Ledger",
  "owner": "Administrator",
  "prepared_report": 1,
  "ref_doctype": "Purchase Invoice",
- "report_name": "Supplier Statement Of Account",
+ "report_name": "Supplier Ledger",
  "report_type": "Script Report",
  "roles": [
   {

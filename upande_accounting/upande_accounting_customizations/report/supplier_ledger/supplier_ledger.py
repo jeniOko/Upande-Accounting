@@ -64,13 +64,13 @@ def execute(filters=None):
 # filters, or `frappe.get_doc`). To keep those buttons on the system-default
 # tabular print (with column picking + letterhead, like any other report),
 # the fancy layout below is named *_print_template.html — not
-# supplier_statement_of_account.html — so Frappe does not auto-load it as
+# supplier_ledger.html — so Frappe does not auto-load it as
 # html_format. It is rendered here instead, server-side via
 # frappe.render_template, and shipped to the browser as a ready-made PDF
 # through the "Print Statement" button.
 
 @frappe.whitelist()
-def download_statement_pdf(supplier, from_date, to_date, company=None, show_ageing=1, include_draft=0, currency=None):
+def download_statement_pdf(supplier, from_date, to_date, company=None, show_ageing=0, include_draft=0, currency=None):
     filters = frappe._dict({
         "supplier":      supplier,
         "from_date":     from_date,
@@ -84,7 +84,7 @@ def download_statement_pdf(supplier, from_date, to_date, company=None, show_agei
 
     statement_currency = currency or (data[0]["currency"] if data else get_supplier_currency(supplier, company))
 
-    html_path = os.path.join(os.path.dirname(__file__), "supplier_statement_of_account_print_template.html")
+    html_path = os.path.join(os.path.dirname(__file__), "supplier_ledger_print_template.html")
     with open(html_path) as f:
         template = f.read()
 
@@ -98,7 +98,7 @@ def download_statement_pdf(supplier, from_date, to_date, company=None, show_agei
 
     html = frappe.render_template(template, {"doc": doc_context, "data": data})
 
-    frappe.local.response.filename     = f"Statement-{supplier}-{to_date}.pdf"
+    frappe.local.response.filename     = f"Supplier-Ledger-{supplier}-{to_date}.pdf"
     frappe.local.response.filecontent  = get_pdf(html)
     frappe.local.response.type         = "download"
 
@@ -302,7 +302,7 @@ def get_data(filters):
     supplier      = filters["supplier"]
     from_date     = filters["from_date"]
     to_date       = filters["to_date"]
-    show_ageing   = filters.get("show_ageing", 1)
+    show_ageing   = filters.get("show_ageing", 0)
     include_draft = filters.get("include_draft")
     currency      = get_supplier_currency(supplier, company)
 
@@ -501,7 +501,6 @@ def get_data(filters):
             supplier=supplier,
             company=company,
             to_date=to_date,
-            accounts=accounts,
         )
 
     return data
@@ -530,76 +529,55 @@ def get_payment_term_interval(supplier):
     return 30
 
 
-def get_ageing_summary(currency, supplier=None, company=None, to_date=None, accounts=None):
+def get_ageing_summary(currency, supplier=None, company=None, to_date=None):
     """
-    Build 4 ageing buckets sized to the supplier's payment terms interval
+    Build 5 ageing buckets sized to the supplier's payment terms interval
     (defaults to 30 days). Buckets are: current, 1×, 2×, 3×, 3×+ the interval.
 
-    Queries ALL GL entries up to to_date (not just the report period) so that
-    bills raised before from_date but still outstanding are correctly aged.
-    Uses to_date as the reference date so the report reflects the state on that
-    day — not the actual current date.
+    Sourced from the Purchase Invoice's own `outstanding_amount` — the
+    accounting engine keeps this net of every payment, credit note, and
+    write-off applied against that bill — rather than re-deriving a balance
+    from raw GL Entry rows grouped by voucher_no. A Payment Entry posts its
+    GL rows under its own voucher_no, never the invoice's, so grouping GL
+    Entry by voucher_no can never see that a bill was paid; it would keep
+    reporting closed/fully-paid bills as fully outstanding forever. Only
+    bills with a positive outstanding_amount as of to_date are included, so
+    the summary reflects open (unpaid/overdue) bills only.
     """
     interval = get_payment_term_interval(supplier) if supplier else 30
     ref_date  = getdate(to_date) if to_date else getdate(nowdate())
 
-    # Outstanding balance per voucher as of to_date
-    invoice_balances  = {}
-    invoice_due_dates = {}
-
-    if supplier and company and accounts and to_date:
-        acc_ph = ", ".join(["%s"] * len(accounts))
-        rows = frappe.db.sql(
-            """
-            SELECT
-                voucher_no,
-                voucher_type,
-                SUM(debit_in_account_currency)  AS total_debit,
-                SUM(credit_in_account_currency) AS total_credit
-            FROM `tabGL Entry` gle
-            WHERE
-                party_type   = 'Supplier'
-                AND party    = %s
-                AND account  IN ({acc_ph})
-                AND posting_date <= %s
-                AND is_cancelled  = 0
-                AND company  = %s
-                {exclude_forex_je}
-            GROUP BY voucher_no, voucher_type
-            """.format(acc_ph=acc_ph, exclude_forex_je=EXCLUDE_FOREX_JE),
-            tuple([supplier] + accounts + [to_date, company]),
-            as_dict=True,
-        )
-        for row in rows:
-            balance = flt(row.total_credit) - flt(row.total_debit)
-            if balance > 0:
-                invoice_balances[row.voucher_no] = balance
-            if row.voucher_type == "Purchase Invoice" and row.voucher_no not in invoice_due_dates:
-                pi = frappe.db.get_value(
-                    "Purchase Invoice", row.voucher_no,
-                    ["due_date", "is_return"], as_dict=True,
-                )
-                if pi and not pi.is_return and pi.due_date:
-                    invoice_due_dates[row.voucher_no] = pi.due_date
-
     # 5 slots: 0=current, 1=1×, 2=2×, 3=3×, 4=over 3×
     buckets = [0.0, 0.0, 0.0, 0.0, 0.0]
 
-    for voucher_no, balance in invoice_balances.items():
-        due_date = invoice_due_dates.get(voucher_no)
-        if not due_date:
-            continue
-        days_overdue = (ref_date - getdate(due_date)).days
-        if days_overdue <= 0:
-            buckets[0] += balance
-        elif days_overdue <= interval:
-            buckets[1] += balance
-        elif days_overdue <= 2 * interval:
-            buckets[2] += balance
-        elif days_overdue <= 3 * interval:
-            buckets[3] += balance
-        else:
-            buckets[4] += balance
+    if supplier and company and to_date:
+        open_bills = frappe.get_all(
+            "Purchase Invoice",
+            filters={
+                "supplier":           supplier,
+                "company":            company,
+                "docstatus":          1,
+                "is_return":          0,
+                "posting_date":       ["<=", to_date],
+                "outstanding_amount": [">", 0],
+            },
+            fields=["due_date", "outstanding_amount"],
+        )
+        for bill in open_bills:
+            if not bill.due_date:
+                continue
+            balance      = flt(bill.outstanding_amount)
+            days_overdue = (ref_date - getdate(bill.due_date)).days
+            if days_overdue <= 0:
+                buckets[0] += balance
+            elif days_overdue <= interval:
+                buckets[1] += balance
+            elif days_overdue <= 2 * interval:
+                buckets[2] += balance
+            elif days_overdue <= 3 * interval:
+                buckets[3] += balance
+            else:
+                buckets[4] += balance
 
     i = interval
     labels = [

@@ -5,14 +5,14 @@ frappe.query_reports["Supplier Statement Summary"] = {
 
     onload: function (report) {
         // Top-right button: open detail report (no supplier pre-selected)
-        report.page.add_inner_button(__("Supplier Statement"), function () {
+        report.page.add_inner_button(__("Supplier Ledger"), function () {
             frappe.route_options = {
                 company:       frappe.query_report.get_filter_value("company"),
                 from_date:     frappe.query_report.get_filter_value("from_date"),
                 to_date:       frappe.query_report.get_filter_value("to_date"),
                 include_draft: frappe.query_report.get_filter_value("include_draft") || 0,
             };
-            frappe.set_route("query-report", "Supplier Statement Of Account");
+            frappe.set_route("query-report", "Supplier Ledger");
         });
 
         // Use document-level delegation — Frappe's DataTable re-renders cells
@@ -28,7 +28,7 @@ frappe.query_reports["Supplier Statement Summary"] = {
                 to_date:       frappe.query_report.get_filter_value("to_date"),
                 include_draft: frappe.query_report.get_filter_value("include_draft") || 0,
             };
-            frappe.set_route("query-report", "Supplier Statement Of Account");
+            frappe.set_route("query-report", "Supplier Ledger");
         });
     },
 

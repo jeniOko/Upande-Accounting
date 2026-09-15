@@ -20,7 +20,7 @@ Filters:
   show_in_company_currency (Check) — toggle party vs base currency,
   include_draft (Check) — add unsubmitted PI amounts to closing balance.
 
-Clicking a supplier row navigates to Supplier Statement Of Account
+Clicking a supplier row navigates to Supplier Ledger
 with the same company/date/draft filters pre-filled (handled in JS).
 """
 

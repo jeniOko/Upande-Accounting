@@ -41,6 +41,7 @@ doc_events = {
     },
     "Purchase Invoice": {
         "before_validate": [
+            "upande_accounting.utils.strip_ignored_withholding_category_from_items",
             "upande_accounting.utils.sync_is_service_item_on_pi",
             "upande_accounting.utils.sync_tds_from_item_tax_template",
             "upande_accounting.utils.normalize_withholding_categories_on_items",
@@ -51,6 +52,8 @@ doc_events = {
             "upande_accounting.utils.remove_orphaned_withholding_tax_rows",
             "upande_accounting.utils.apply_additional_withholding_rows",
             "upande_accounting.utils.recalculate_withholding_tax_amounts",
+            "upande_accounting.utils.apply_withholding_override_rows",
+            "upande_accounting.utils.recalculate_withholding_override_amounts",
             "upande_accounting.utils.finalize_additional_withholding_totals",
             "upande_accounting.utils.validate_additional_withholding_defaults",
             "upande_accounting.utils.set_withholding_tax_rates",

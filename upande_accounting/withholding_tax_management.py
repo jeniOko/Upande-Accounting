@@ -56,19 +56,40 @@ def resolve_withholding_category(pi, account_head, company):
 
     A withholding account is often shared by several categories (different
     rates over time, goods vs. services) — resolving from the account alone
-    is ambiguous. Only the categories actually selected on the invoice
-    (tax_withholding_category + custom_withholding_1/2/3) are checked first;
-    falls back to any category referencing the account for the company when
-    none of the invoice's own categories match (legacy/manually edited data).
+    is ambiguous. Only the categories actually selected on the invoice are
+    checked first: header tax_withholding_category + custom_withholding_1/2/3;
+    then, per item, that item's own manual override category (checked before
+    its other fields, since an override is the most deliberate, explicit
+    choice for that row's account) followed by its own tax_withholding_category
+    + custom_withholding_2/3 — a category assigned only at item level, with
+    no matching header default, is just as valid a source. Falls back to any
+    category referencing the account for the company when none of the
+    invoice's own categories match (legacy/manually edited data).
 
     `pi` may be a full Purchase Invoice Document or a dict/frappe._dict with
-    the same field names — both support .get().
+    the same field names — both support .get(). Item-level categories are
+    only picked up when `pi` carries a populated "items" list.
     """
     categories = []
+
+    # Per-item manual overrides (Apply) are the most deliberate, explicit
+    # choice for a specific account — checked before anything else.
+    for item in (pi.get("items") or []):
+        if item.get("custom_ignore_withholding_treatment") and item.get("custom_withholding_override_action") == "Apply":
+            override_cat = item.get("custom_withholding_override_category")
+            if override_cat and override_cat not in categories:
+                categories.append(override_cat)
+
     for f in ("tax_withholding_category", "custom_withholding_1", "custom_withholding_2", "custom_withholding_3"):
         val = pi.get(f)
         if val and val not in categories:
             categories.append(val)
+
+    for item in (pi.get("items") or []):
+        for f in ("tax_withholding_category", "custom_withholding_2", "custom_withholding_3"):
+            val = item.get(f)
+            if val and val not in categories:
+                categories.append(val)
 
     if categories:
         rows = frappe.get_all(

@@ -16,6 +16,7 @@ frappe.query_reports["Creditors Aging Summary"] = {
                 party:             frappe.query_report.get_filter_value("party"),
                 in_party_currency: frappe.query_report.get_filter_value("in_party_currency") || 0,
                 include_draft:     frappe.query_report.get_filter_value("include_draft") || 0,
+                show_advance_payment: frappe.query_report.get_filter_value("show_advance_payment") || 0,
             };
             frappe.set_route("query-report", "Creditors Aging");
         });
@@ -45,7 +46,7 @@ frappe.query_reports["Creditors Aging Summary"] = {
             label:     __("Ageing Based On"),
             fieldtype: "Select",
             options:   "Posting Date\nDue Date",
-            default:   "Due Date",
+            default:   "Posting Date",
         },
         {
             fieldname: "range",
@@ -80,10 +81,16 @@ frappe.query_reports["Creditors Aging Summary"] = {
             options:   "Finance Book",
         },
         {
+            fieldname: "show_advance_payment",
+            label:     __("Show Advance Payment"),
+            fieldtype: "Check",
+            default:   0,
+        },
+        {
             fieldname: "in_party_currency",
             label:     __("In Party Currency"),
             fieldtype: "Check",
-            default:   0,
+            default:   1,
         },
         {
             fieldname: "include_draft",

@@ -7,7 +7,9 @@ Creditors Aging — per-invoice aging report (mirrors Accounts Payable).
 Inherits the full ReceivablePayableReport logic from ERPNext and adds:
 
   1. Custom column layout  — Bill No and Bill Date as primary identifiers;
-     Voucher No moved to the last column.
+     Debit Note / Outstanding / Invoiced / Paid Amount moved to sit after the
+     ageing buckets and before Supplier Group; Voucher No moved to the last
+     column; the base report's "<0" (not-yet-due) ageing column is dropped.
 
   2. Status column  — Overdue / Almost Due / Not Due computed from due_date
      vs the As On Date (report_date).
@@ -16,6 +18,12 @@ Inherits the full ReceivablePayableReport logic from ERPNext and adds:
      (orange italic), each placed in the correct aging bucket.
 
   4. in_party_currency  — exposed as an explicit filter; handled by the base.
+     Defaults to checked (JS side).
+
+  5. show_advance_payment  — off by default, which restricts the report to
+     genuine Purchase Invoice rows only (open bills), hiding standalone
+     unallocated Payment Entry / Journal Entry "advance" rows and the Paid
+     Amount column. Checking it restores both.
 
 Navigation: "Creditors Aging Summary" button switches to the per-supplier
 summary carrying all filters across.
@@ -23,7 +31,7 @@ summary carrying all filters across.
 
 import frappe
 from frappe import _, scrub
-from frappe.utils import flt, getdate
+from frappe.utils import cint, flt, getdate
 
 from erpnext.accounts.report.accounts_receivable.accounts_receivable import ReceivablePayableReport
 
@@ -70,12 +78,18 @@ class CreditorsAgingReport(ReceivablePayableReport):
             self.add_column(_("Payment Term"),        fieldname="payment_term",        fieldtype="Data", width=150)
             self.add_column(_("Invoice Grand Total"), fieldname="invoice_grand_total",                   width=150)
 
-        self.add_column(_("Paid Amount"),        fieldname="paid",        width=130)
-        self.add_column(_("Invoiced Amount"),    fieldname="invoiced",    width=130)
+        self.add_column(_("Age (Days)"), fieldname="age", fieldtype="Int", width=80)
+        self.setup_ageing_columns()
+
+        # Debit Note / Outstanding / Invoiced / Paid sit after the ageing
+        # buckets, right before Supplier Group. Paid Amount only makes sense
+        # once advance/unallocated payments are in view, so it's gated on
+        # show_advance_payment.
         self.add_column(_("Debit Note"),         fieldname="credit_note", width=130)
         self.add_column(_("Outstanding Amount"), fieldname="outstanding", width=150)
-        self.add_column(_("Age (Days)"),         fieldname="age",         fieldtype="Int", width=80)
-        self.setup_ageing_columns()
+        self.add_column(_("Invoiced Amount"),    fieldname="invoiced",    width=130)
+        if self.filters.get("show_advance_payment"):
+            self.add_column(_("Paid Amount"), fieldname="paid", width=130)
 
         self.add_column(_("Supplier Group"), fieldname="supplier_group", fieldtype="Link",
                         options="Supplier Group", width=130)
@@ -91,6 +105,24 @@ class CreditorsAgingReport(ReceivablePayableReport):
         # Voucher No last
         self.add_column(_("Voucher No"), fieldname="voucher_no", fieldtype="Dynamic Link",
                         options="voucher_type", width=180)
+
+    def setup_ageing_columns(self):
+        """Same buckets as the base report, minus the "<0" (not-yet-due)
+        column — with ageing now defaulting to Posting Date, a row's
+        relevant date is essentially never after the As On Date, so that
+        bucket is just noise. Chart labels still include it so
+        get_chart_data()'s values (which always lead with range0) line up.
+        """
+        self.ageing_column_labels = [_("<0")]
+        ranges = [*self.ranges, _("Above")]
+
+        prev_range_value = 0
+        for idx, curr_range_value in enumerate(ranges):
+            label = f"{prev_range_value}-{curr_range_value}"
+            self.add_column(label=label, fieldname="range" + str(idx + 1))
+            self.ageing_column_labels.append(label)
+            if curr_range_value.isdigit():
+                prev_range_value = cint(curr_range_value) + 1
 
     # ------------------------------------------------------------------
     # Status helpers
@@ -110,6 +142,11 @@ class CreditorsAgingReport(ReceivablePayableReport):
             row.status = "Overdue"
 
     def append_row(self, row):
+        # Open invoices only by default: a row with no linked Purchase
+        # Invoice (an unallocated Payment Entry/Journal Entry, i.e. an
+        # advance) is skipped unless the user explicitly asks to see it.
+        if not self.filters.get("show_advance_payment") and not self.is_invoice(row):
+            return
         super().append_row(row)
         self._set_row_status(row)
 

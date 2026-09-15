@@ -11,16 +11,26 @@ Inherits the full ReceivablePayableReport logic from ERPNext and adds:
      so the JS can style them (orange italic).
 
   2. in_party_currency  — already handled by the base class; exposed here
-     as an explicit filter so users can toggle it.
+     as an explicit filter so users can toggle it. Defaults to checked
+     (JS side).
+
+  3. show_advance_payment  — off by default, which restricts the report to
+     genuine Sales Invoice rows only (open invoices), hiding standalone
+     unallocated Payment Entry / Journal Entry "advance" rows and the Paid
+     Amount column. Checking it restores both.
+
+  4. Custom column layout — Credit Note / Outstanding / Invoiced / Paid
+     Amount moved to sit after the ageing buckets and before Customer LPO;
+     the base report's "<0" (not-yet-due) ageing column is dropped.
 
 Navigation: a top-right button switches to Debtors Aging Summary,
 carrying company / report_date / ageing_based_on / range / party /
-in_party_currency / include_draft across.
+in_party_currency / include_draft / show_advance_payment across.
 """
 
 import frappe
 from frappe import _, scrub
-from frappe.utils import flt, getdate
+from frappe.utils import cint, flt, getdate
 
 from erpnext.accounts.report.accounts_receivable.accounts_receivable import ReceivablePayableReport
 
@@ -69,12 +79,18 @@ class DebtorsAgingReport(ReceivablePayableReport):
             self.add_column(_("Payment Term"),        fieldname="payment_term",        fieldtype="Data", width=150)
             self.add_column(_("Invoice Grand Total"), fieldname="invoice_grand_total",                   width=150)
 
-        self.add_column(_("Paid Amount"),        fieldname="paid",        width=130)
-        self.add_column(_("Invoiced Amount"),    fieldname="invoiced",    width=130)
+        self.add_column(_("Age (Days)"), fieldname="age", fieldtype="Int", width=80)
+        self.setup_ageing_columns()
+
+        # Credit Note / Outstanding / Invoiced / Paid sit after the ageing
+        # buckets, right before Customer LPO. Paid Amount only makes sense
+        # once advance/unallocated payments are in view, so it's gated on
+        # show_advance_payment.
         self.add_column(_("Credit Note"),        fieldname="credit_note", width=130)
         self.add_column(_("Outstanding Amount"), fieldname="outstanding", width=150)
-        self.add_column(_("Age (Days)"),         fieldname="age",         fieldtype="Int", width=80)
-        self.setup_ageing_columns()
+        self.add_column(_("Invoiced Amount"),    fieldname="invoiced",    width=130)
+        if self.filters.get("show_advance_payment"):
+            self.add_column(_("Paid Amount"), fieldname="paid", width=130)
 
         self.add_column(_("Customer LPO"),   fieldname="po_no",           fieldtype="Data", width=120)
         self.add_column(_("Territory"),      fieldname="territory",       fieldtype="Link",
@@ -92,6 +108,24 @@ class DebtorsAgingReport(ReceivablePayableReport):
             self.add_column(_("Future Payment Ref"),    fieldname="future_ref",        fieldtype="Data", width=150)
             self.add_column(_("Future Payment Amount"), fieldname="future_amount",                       width=150)
             self.add_column(_("Remaining Balance"),     fieldname="remaining_balance",                   width=150)
+
+    def setup_ageing_columns(self):
+        """Same buckets as the base report, minus the "<0" (not-yet-due)
+        column — with ageing now defaulting to Posting Date, a row's
+        relevant date is essentially never after the As On Date, so that
+        bucket is just noise. Chart labels still include it so
+        get_chart_data()'s values (which always lead with range0) line up.
+        """
+        self.ageing_column_labels = [_("<0")]
+        ranges = [*self.ranges, _("Above")]
+
+        prev_range_value = 0
+        for idx, curr_range_value in enumerate(ranges):
+            label = f"{prev_range_value}-{curr_range_value}"
+            self.add_column(label=label, fieldname="range" + str(idx + 1))
+            self.ageing_column_labels.append(label)
+            if curr_range_value.isdigit():
+                prev_range_value = cint(curr_range_value) + 1
 
     # ------------------------------------------------------------------
     # Status helpers
@@ -119,6 +153,11 @@ class DebtorsAgingReport(ReceivablePayableReport):
             row.status = "Overdue"
 
     def append_row(self, row):
+        # Open invoices only by default: a row with no linked Sales Invoice
+        # (an unallocated Payment Entry/Journal Entry, i.e. an advance) is
+        # skipped unless the user explicitly asks to see it.
+        if not self.filters.get("show_advance_payment") and not self.is_invoice(row):
+            return
         super().append_row(row)
         self._set_row_status(row)
 

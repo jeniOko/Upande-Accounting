@@ -18,7 +18,15 @@ receivable) and adds:
      (each payment at its own exchange rate), then recomputes outstanding.
 
   3. Custom column layout  — Currency after Party, Debit Note instead of Credit Note,
-     Supplier Group instead of Territory / Customer Group.
+     Supplier Group instead of Territory / Customer Group. Debit Note /
+     Outstanding / Invoiced Amount sit after the ageing buckets, just before
+     Supplier Group; the base report's "<0" (not-yet-due) ageing column is
+     dropped.
+
+  4. show_advance_payment  — off by default, which hides the Advance Amount
+     and Paid Amount columns so the summary reads as pure invoice totals.
+     Checking it shows both (the underlying figures are always computed;
+     this only gates what's rendered).
 """
 
 import frappe
@@ -65,17 +73,41 @@ class CreditorsAgingSummaryReport(AccountsReceivableSummary):
         if self.party_naming_by == "Naming Series":
             self.add_column(_("Supplier Name"), fieldname="party_name", fieldtype="Data", width=200)
 
-        self.add_column(_("Advance Amount"),     fieldname="advance",      width=130)
-        self.add_column(_("Invoiced Amount"),    fieldname="invoiced",     width=130)
-        self.add_column(_("Paid Amount"),        fieldname="paid",         width=130)
-        self.add_column(_("Debit Note"),         fieldname="credit_note",  width=130)
-        self.add_column(_("Outstanding Amount"), fieldname="outstanding",  width=150)
+        if self.filters.get("show_advance_payment"):
+            self.add_column(_("Advance Amount"), fieldname="advance", width=130)
 
         self.setup_ageing_columns()
         self.add_column(_("Total Amount Due"), fieldname="total_due", width=150)
 
+        # Debit Note / Outstanding / Invoiced / Paid sit after the ageing
+        # buckets, right before Supplier Group. Paid Amount only makes sense
+        # once advance payments are in view, so it's gated on
+        # show_advance_payment, same as Advance Amount above.
+        self.add_column(_("Debit Note"),         fieldname="credit_note",  width=130)
+        self.add_column(_("Outstanding Amount"), fieldname="outstanding",  width=150)
+        self.add_column(_("Invoiced Amount"),    fieldname="invoiced",     width=130)
+        if self.filters.get("show_advance_payment"):
+            self.add_column(_("Paid Amount"), fieldname="paid", width=130)
+
         self.add_column(_("Supplier Group"), fieldname="supplier_group", fieldtype="Link",
                         options="Supplier Group", width=130)
+
+    def setup_ageing_columns(self):
+        """Same buckets as the base report, minus the "<0" (not-yet-due)
+        column — with ageing now defaulting to Posting Date, a row's
+        relevant date is essentially never after the As On Date, so that
+        bucket is just noise.
+        """
+        self.ageing_column_labels = [_("<0")]
+        ranges = [*self.ranges, _("Above")]
+
+        prev_range_value = 0
+        for idx, curr_range_value in enumerate(ranges):
+            label = f"{prev_range_value}-{curr_range_value}"
+            self.add_column(label=label, fieldname="range" + str(idx + 1))
+            self.ageing_column_labels.append(label)
+            if curr_range_value.isdigit():
+                prev_range_value = cint(curr_range_value) + 1
 
     # ------------------------------------------------------------------
     # Data

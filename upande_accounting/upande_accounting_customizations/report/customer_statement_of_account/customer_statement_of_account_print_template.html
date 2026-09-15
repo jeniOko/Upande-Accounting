@@ -195,51 +195,6 @@
     font-style: italic;
   }
 
-  /* ── Ageing section ─────────────────────────────────────────── */
-  .ageing-section {
-    margin-top: 8px;
-    border-top: 2px solid #111;
-    padding-top: 10px;
-  }
-
-  .ageing-section .ageing-title {
-    font-size: 9px;
-    text-transform: uppercase;
-    letter-spacing: 0.8px;
-    font-weight: 700;
-    color: #111;
-    margin-bottom: 8px;
-  }
-
-  .ageing-grid {
-    display: flex;
-    gap: 0;
-    border: 1px solid #ccc;
-  }
-
-  .ageing-cell {
-    flex: 1;
-    padding: 8px 10px;
-    border-right: 1px solid #ccc;
-    text-align: center;
-  }
-
-  .ageing-cell:last-child { border-right: none; }
-
-  .ageing-cell .ag-label {
-    font-size: 8.5px;
-    text-transform: uppercase;
-    letter-spacing: 0.5px;
-    color: #888;
-    margin-bottom: 4px;
-  }
-
-  .ageing-cell .ag-value {
-    font-size: 12px;
-    font-weight: 700;
-    color: #111;
-  }
-
   /* ── Footer ─────────────────────────────────────────────────── */
   .print-footer {
     margin-top: 24px;
@@ -301,24 +256,12 @@
 </div>
 
 <!-- Customer + summary boxes -->
-{%- set ns = namespace(closing=0, total_debit=0.0, total_credit=0.0,
-                       ag_current=0.0, ag_30=0.0, ag_60=0.0, ag_90=0.0, ag_over=0.0,
-                       has_ageing=false) -%}
+{%- set ns = namespace(closing=0, total_debit=0.0, total_credit=0.0) -%}
 {%- for row in data -%}
   {%- if row.is_closing -%}{%- set ns.closing = row.balance -%}{%- endif -%}
-  {%- if not row.is_opening and not row.is_closing and not row.is_ageing and not row.is_separator -%}
+  {%- if not row.is_opening and not row.is_closing -%}
     {%- set ns.total_debit  = ns.total_debit  + (row.debit  | float) -%}
     {%- set ns.total_credit = ns.total_credit + (row.credit | float) -%}
-  {%- endif -%}
-  {%- if row.is_ageing -%}
-    {%- set ns.has_ageing = true -%}
-    {%- set lbl = (row.description or "") | lower -%}
-    {%- if   "current" in lbl   -%}{%- set ns.ag_current = row.balance | float -%}
-    {%- elif "1 –" in lbl       -%}{%- set ns.ag_30      = row.balance | float -%}
-    {%- elif "31 –" in lbl      -%}{%- set ns.ag_60      = row.balance | float -%}
-    {%- elif "61 –" in lbl      -%}{%- set ns.ag_90      = row.balance | float -%}
-    {%- elif "over 90" in lbl   -%}{%- set ns.ag_over    = row.balance | float -%}
-    {%- endif -%}
   {%- endif -%}
 {%- endfor -%}
 
@@ -333,15 +276,15 @@
   <div class="summary-boxes">
     <div class="summary-box">
       <div class="box-label">Total Invoiced</div>
-      <div class="box-value">{{ frappe.format(ns.total_debit,  {"fieldtype":"Currency","options":currency}) }}</div>
+      <div class="box-value">{{ frappe.format(ns.total_debit,  {"fieldtype":"Currency"}, currency=currency) }}</div>
     </div>
     <div class="summary-box">
       <div class="box-label">Total Receipts</div>
-      <div class="box-value">{{ frappe.format(ns.total_credit, {"fieldtype":"Currency","options":currency}) }}</div>
+      <div class="box-value">{{ frappe.format(ns.total_credit, {"fieldtype":"Currency"}, currency=currency) }}</div>
     </div>
     <div class="summary-box balance-due">
       <div class="box-label">Balance Due</div>
-      <div class="box-value">{{ frappe.format(ns.closing, {"fieldtype":"Currency","options":currency}) }}</div>
+      <div class="box-value">{{ frappe.format(ns.closing, {"fieldtype":"Currency"}, currency=currency) }}</div>
     </div>
   </div>
 </div>
@@ -363,25 +306,21 @@
   <tbody>
   {%- for row in data -%}
 
-    {%- if row.is_separator -%}{# skip #}
-
-    {%- elif row.is_ageing -%}{# rendered separately below #}
-
-    {%- elif row.is_opening or row.is_closing -%}
+    {%- if row.is_opening or row.is_closing -%}
     <tr class="system-row">
       <td>{{ frappe.format(row.posting_date, "Date") if row.posting_date else "" }}</td>
       <td colspan="4">{{ row.description }}</td>
       <td class="num">
         {%- if row.debit is not none and row.debit != "" -%}
-          {{ frappe.format(row.debit, {"fieldtype":"Currency","options":currency}) }}
+          {{ frappe.format(row.debit, {"fieldtype":"Currency"}, currency=currency) }}
         {%- endif -%}
       </td>
       <td class="num">
         {%- if row.credit is not none and row.credit != "" -%}
-          {{ frappe.format(row.credit, {"fieldtype":"Currency","options":currency}) }}
+          {{ frappe.format(row.credit, {"fieldtype":"Currency"}, currency=currency) }}
         {%- endif -%}
       </td>
-      <td class="num">{{ frappe.format(row.balance, {"fieldtype":"Currency","options":currency}) }}</td>
+      <td class="num">{{ frappe.format(row.balance, {"fieldtype":"Currency"}, currency=currency) }}</td>
     </tr>
 
     {%- else -%}
@@ -392,47 +331,18 @@
       <td>{{ row.description or "" }}</td>
       <td>{{ frappe.format(row.due_date, "Date") if row.due_date else "" }}</td>
       <td class="num">
-        {%- if row.debit -%}{{ frappe.format(row.debit, {"fieldtype":"Currency","options":currency}) }}{%- endif -%}
+        {%- if row.debit -%}{{ frappe.format(row.debit, {"fieldtype":"Currency"}, currency=currency) }}{%- endif -%}
       </td>
       <td class="num">
-        {%- if row.credit -%}{{ frappe.format(row.credit, {"fieldtype":"Currency","options":currency}) }}{%- endif -%}
+        {%- if row.credit -%}{{ frappe.format(row.credit, {"fieldtype":"Currency"}, currency=currency) }}{%- endif -%}
       </td>
-      <td class="num">{{ frappe.format(row.balance, {"fieldtype":"Currency","options":currency}) }}</td>
+      <td class="num">{{ frappe.format(row.balance, {"fieldtype":"Currency"}, currency=currency) }}</td>
     </tr>
     {%- endif -%}
 
   {%- endfor -%}
   </tbody>
 </table>
-
-<!-- Ageing summary grid (only if present in data) -->
-{%- if ns.has_ageing -%}
-<div class="ageing-section">
-  <div class="ageing-title">Ageing Summary</div>
-  <div class="ageing-grid">
-    <div class="ageing-cell">
-      <div class="ag-label">Current</div>
-      <div class="ag-value">{{ frappe.format(ns.ag_current, {"fieldtype":"Currency","options":currency}) }}</div>
-    </div>
-    <div class="ageing-cell">
-      <div class="ag-label">1 – 30 Days</div>
-      <div class="ag-value">{{ frappe.format(ns.ag_30, {"fieldtype":"Currency","options":currency}) }}</div>
-    </div>
-    <div class="ageing-cell">
-      <div class="ag-label">31 – 60 Days</div>
-      <div class="ag-value">{{ frappe.format(ns.ag_60, {"fieldtype":"Currency","options":currency}) }}</div>
-    </div>
-    <div class="ageing-cell">
-      <div class="ag-label">61 – 90 Days</div>
-      <div class="ag-value">{{ frappe.format(ns.ag_90, {"fieldtype":"Currency","options":currency}) }}</div>
-    </div>
-    <div class="ageing-cell">
-      <div class="ag-label">Over 90 Days</div>
-      <div class="ag-value">{{ frappe.format(ns.ag_over, {"fieldtype":"Currency","options":currency}) }}</div>
-    </div>
-  </div>
-</div>
-{%- endif -%}
 
 <!-- Footer -->
 <div class="print-footer">

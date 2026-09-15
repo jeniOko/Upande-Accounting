@@ -1,40 +1,6 @@
 // Copyright (c) 2026, jeniffer@upande.com and contributors
 // For license information, please see license.txt
 
-function toggleAgeingRows(show) {
-    // Find the DataTable body wrapper inside the report area
-    const reportWrapper = document.querySelector(
-        ".frappe-report .dt-scrollable, " +
-        ".frappe-report .datatable .dt-body, " +
-        ".report-wrapper .dt-scrollable"
-    );
-    if (!reportWrapper) return;
-
-    const allRows = Array.from(reportWrapper.querySelectorAll(".dt-row"));
-    if (!allRows.length) return;
-
-    // Locate the closing-balance row — it's the last row whose
-    // description cell contains "Closing Balance"
-    let closingIdx = -1;
-    allRows.forEach((tr, idx) => {
-        const cells = Array.from(tr.querySelectorAll(".dt-cell"));
-        const hasClosing = cells.some(
-            c => (c.textContent || "").trim() === "Closing Balance"
-        );
-        if (hasClosing) closingIdx = idx;
-    });
-
-    if (closingIdx === -1) return;   // closing row not found yet — nothing to do
-
-    // Hide/show every row after the closing balance row
-    allRows.forEach((tr, idx) => {
-        if (idx > closingIdx) {
-            tr.style.display = show ? "" : "none";
-        }
-    });
-}
-
-
 frappe.query_reports["Customer Statement Of Account"] = {
 
     onload: function (report) {
@@ -69,9 +35,7 @@ frappe.query_reports["Customer Statement Of Account"] = {
                 company:       company,
                 from_date:     from_date,
                 to_date:       to_date,
-                show_ageing:   frappe.query_report.get_filter_value("show_ageing") || 0,
                 include_draft: frappe.query_report.get_filter_value("include_draft") || 0,
-                currency:      frappe.query_report.get_filter_value("currency") || "",
             });
 
             window.open(
@@ -97,15 +61,6 @@ frappe.query_reports["Customer Statement Of Account"] = {
             fieldtype: "Link",
             options: "Customer",
             reqd: 1,
-            on_change: function () {
-                const customer = frappe.query_report.get_filter_value("customer");
-                if (!customer) return;
-                frappe.db.get_value("Customer", customer, "default_currency", (r) => {
-                    if (r && r.default_currency) {
-                        frappe.query_report.set_filter_value("currency", r.default_currency);
-                    }
-                });
-            },
         },
         {
             fieldname: "from_date",
@@ -122,30 +77,10 @@ frappe.query_reports["Customer Statement Of Account"] = {
             reqd: 1,
         },
         {
-            fieldname: "currency",
-            label: __("Currency"),
-            fieldtype: "Link",
-            options: "Currency",
-            default: frappe.defaults.get_user_default("currency"),
-        },
-        {
             fieldname: "include_draft",
             label: __("Include Draft Invoices"),
             fieldtype: "Check",
             default: 0,
-        },
-        {
-            fieldname: "show_ageing",
-            label: __("Show Ageing Summary"),
-            fieldtype: "Check",
-            default: 0,
-            on_change: function () {
-                // Instantly toggle visibility without a full server re-run.
-                // The Python also respects this flag — a manual Refresh will
-                // fully add or remove ageing rows from the dataset.
-                const show = frappe.query_report.get_filter_value("show_ageing");
-                toggleAgeingRows(!!show);
-            },
         },
     ],
 
@@ -161,13 +96,8 @@ frappe.query_reports["Customer Statement Of Account"] = {
             value = `<strong>${value || ""}</strong>`;
         }
 
-        // Ageing separator — section heading in the Document Type column
-        if (data.is_separator && column.fieldname === "display_type") {
-            value = `<span style="color:#888; font-size:0.85em; font-weight:600; letter-spacing:0.04em; text-transform:uppercase;">${value || ""}</span>`;
-        }
-
         // Document type labels (normal invoice rows)
-        if (column.fieldname === "display_type" && !data.is_ageing && !data.is_separator && !data.is_opening && !data.is_closing) {
+        if (column.fieldname === "display_type" && !data.is_opening && !data.is_closing) {
             if (data.display_type === "Credit Note") {
                 value = `<span style="font-weight:300;">Credit Note</span>`;
             } else if (data.display_type === "Receipt") {
@@ -196,19 +126,6 @@ frappe.query_reports["Customer Statement Of Account"] = {
             value = `<span style="color:#e67e22; font-style:italic;">${value || ""}</span>`;
         }
 
-        // Ageing rows — label in display_type, amount colour-coded by ageing_level
-        if (data.is_ageing) {
-            if (column.fieldname === "display_type") {
-                value = `<em style="color:#555;">${value || ""}</em>`;
-            }
-            if (column.fieldname === "balance" && flt(data.balance) > 0) {
-                // 5 distinct hue families: green → blue → amber → red → purple
-                const colours = ["#27ae60", "#2980b9", "#f39c12", "#e74c3c", "#8e44ad"];
-                const colour  = colours[Math.min(data.ageing_level || 0, colours.length - 1)];
-                value = `<span style="color:${colour}; font-weight:600;">${value}</span>`;
-            }
-        }
-
         return value;
     },
 
@@ -220,21 +137,10 @@ frappe.query_reports["Customer Statement Of Account"] = {
     },
 
     // ------------------------------------------------------------------
-    // After render:
-    //   1. Apply initial ageing visibility based on checkbox state
-    //   2. Attach checkbox row-highlight listener
+    // After render: attach checkbox row-highlight listener
     // ------------------------------------------------------------------
     after_datatable_render: function (datatable) {
 
-        // 1. Apply ageing visibility — use a short delay to let
-        //    the DataTable finish painting all rows into the DOM.
-        setTimeout(() => {
-            const show = frappe.query_report.get_filter_value("show_ageing");
-            // Treat undefined/null as "show" (default 1)
-            toggleAgeingRows(show === undefined || show === null || show == 1);
-        }, 100);
-
-        // 2. Row highlight on checkbox selection
         const HIGHLIGHT_BG     = "#fff9c4";
         const HIGHLIGHT_BORDER = "2px solid #f5a623";
 

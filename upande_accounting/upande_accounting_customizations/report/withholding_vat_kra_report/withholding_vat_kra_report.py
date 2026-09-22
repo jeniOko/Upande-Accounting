@@ -7,20 +7,29 @@ Withholding VAT KRA Report
 KRA-compatible Withholding VAT filing summary.
 
 Only includes Purchase Invoices where the linked Withholding Tax Management
-record has payment_status = 'Paid', meaning the withheld VAT has already
-been remitted to KRA.
+record has suggested_for_payment = 1, i.e. the invoice itself has actually
+been paid to the supplier (a Payment Entry has been submitted against it) —
+that's when VAT is withheld in the first place, regardless of Frappe's own
+`Purchase Invoice.status` label.
+
+By default only rows with payment_status = 'Unpaid' are shown (withheld VAT
+that has NOT yet been remitted to KRA) — the actionable "still owed" view.
+The "Remittance Status" filter can be switched to 'Paid' (already remitted)
+or 'All'.
 
 The From Date / To Date filters apply to wtm.payment_date (the remittance
-date), not the invoice's posting/bill date — this is a filing report, so the
-relevant period is when the withholding was paid over to KRA.
+date) when present; since Unpaid rows have no payment_date yet, they fall
+back to the invoice's bill_date / posting_date so they aren't silently
+dropped from every date-filtered result.
 
 On-screen column order:
   PIN | Invoice Number | Invoice Date | Taxable Amount |
-  WHT VAT Rate (%) | WHT VAT Amount | Payment Date | PRN Number
+  WHT VAT Rate (%) | WHT VAT Amount | Remittance Status | Payment Date | PRN Number
 
 The CSV/XLSX download only goes up to Taxable Amount (PIN | Supplier Name |
-Invoice Number | Invoice Date | Taxable Amount) — Rate/Tax Amount/Payment Date
-are on-screen only, for verification, not part of the KRA upload file.
+Invoice Number | Invoice Date | Taxable Amount) — Rate/Tax Amount/Remittance
+Status/Payment Date are on-screen only, for verification, not part of the
+KRA upload file.
 
 Accounts resolved via is_tax_report_account + tax_report_type IN
 ('Withholding VAT', 'WHVAT') on the Account master.
@@ -31,9 +40,9 @@ only the items actually subject to that category should count.
 
 The join to Withholding Tax Management pins to a single deterministic row
 (via a LIMIT 1 subquery) rather than joining loosely on
-(purchase_invoice, withholding_account, payment_status='Paid'), so more than
-one Paid WTM row for the same invoice/account can never fan this query out
-into duplicate result rows.
+(purchase_invoice, withholding_account, suggested_for_payment=1), so more
+than one matching WTM row for the same invoice/account can never fan this
+query out into duplicate result rows.
 """
 
 import frappe
@@ -46,13 +55,33 @@ def execute(filters=None):
     validate_filters(filters)
     columns = get_columns()
     data = get_data(filters)
-    message = (
-        '<div style="padding:8px 12px; background:#e8f5e9; border-left:4px solid #43a047; '
-        'border-radius:3px; color:#1b5e20;">'
-        '<b>Paid Records Only</b> &mdash; This report shows invoices where the '
-        'Withholding Tax Management record is marked <em>Paid</em> (remitted to KRA).'
-        '</div>'
-    )
+    remittance_status = (filters.get("remittance_status") or "Unpaid").strip()
+    if remittance_status == "All":
+        message = (
+            '<div style="padding:8px 12px; background:#e8f5e9; border-left:4px solid #43a047; '
+            'border-radius:3px; color:#1b5e20;">'
+            '<b>All Remittance Statuses</b> &mdash; Showing invoices with withheld VAT that has '
+            'been paid to the supplier, whether or not it has been remitted to KRA yet.'
+            '</div>'
+        )
+    elif remittance_status == "Paid":
+        message = (
+            '<div style="padding:8px 12px; background:#e8f5e9; border-left:4px solid #43a047; '
+            'border-radius:3px; color:#1b5e20;">'
+            '<b>Remitted Only</b> &mdash; This report is showing invoices where the withheld VAT '
+            'has already been <em>remitted to KRA</em>. Switch <em>Remittance Status</em> to '
+            '<em>Unpaid</em> to see VAT still owed to KRA.'
+            '</div>'
+        )
+    else:
+        message = (
+            '<div style="padding:8px 12px; background:#e8f4fd; border-left:4px solid #2196f3; '
+            'border-radius:3px; color:#1a5276;">'
+            '<b>Pending Remittance Only</b> &mdash; This report is showing invoices that have '
+            'been paid to the supplier but whose withheld VAT has <em>not yet</em> been remitted '
+            'to KRA. Switch <em>Remittance Status</em> to <em>Paid</em> or <em>All</em> to see other records.'
+            '</div>'
+        )
     return columns, data, message
 
 
@@ -115,6 +144,12 @@ def get_columns():
             "fieldname": "tax_amount",
             "fieldtype": "Currency",
             "width":     160,
+        },
+        {
+            "label":     _("Remittance Status"),
+            "fieldname": "payment_status",
+            "fieldtype": "Data",
+            "width":     120,
         },
         {
             "label":     _("Withholding Payment Date"),
@@ -185,6 +220,14 @@ def get_data(filters):
     acc_ph = ", ".join(["%s"] * len(accounts))
     conditions, params = build_conditions(filters)
 
+    remittance_status = (filters.get("remittance_status") or "Unpaid").strip()
+    wtm_params = []
+    if remittance_status in ("Paid", "Unpaid"):
+        remittance_cond = "AND wtm2.payment_status = %s"
+        wtm_params.append(remittance_status)
+    else:
+        remittance_cond = ""
+
     sql = """
         SELECT
             pi.name                                             AS invoice_number,
@@ -201,6 +244,7 @@ def get_data(filters):
                 THEN ROUND(pit.base_tax_amount_after_discount_amount * 100.0 / pit.rate, 2)
                 ELSE NULL
             END                                                 AS taxable_amount,
+            wtm.payment_status,
             wtm.payment_date,
             wtm.prn_number,
             wtm.name                                            AS wtm_name
@@ -213,9 +257,10 @@ def get_data(filters):
             ON  wtm.name = (
                 SELECT wtm2.name
                 FROM   `tabWithholding Tax Management` wtm2
-                WHERE  wtm2.purchase_invoice    = pi.name
-                  AND  wtm2.withholding_account = pit.account_head
-                  AND  wtm2.payment_status      = 'Paid'
+                WHERE  wtm2.purchase_invoice     = pi.name
+                  AND  wtm2.withholding_account  = pit.account_head
+                  AND  wtm2.suggested_for_payment = 1
+                  {remittance_cond}
                 ORDER BY wtm2.name
                 LIMIT  1
             )
@@ -223,10 +268,10 @@ def get_data(filters):
             ON  sup.name = pi.supplier
         WHERE pi.docstatus = 1
         {conditions}
-        ORDER BY wtm.payment_date ASC, pi.supplier ASC
-    """.format(acc_ph=acc_ph, conditions=conditions)
+        ORDER BY COALESCE(wtm.payment_date, pi.bill_date, pi.posting_date) ASC, pi.supplier ASC
+    """.format(acc_ph=acc_ph, remittance_cond=remittance_cond, conditions=conditions)
 
-    rows = frappe.db.sql(sql, tuple(accounts + params), as_dict=True)
+    rows = frappe.db.sql(sql, tuple(accounts + wtm_params + params), as_dict=True)
 
     result = []
     for row in rows:
@@ -238,6 +283,7 @@ def get_data(filters):
             "taxable_amount": flt(row.get("taxable_amount")),
             "tax_rate":       flt(row.get("tax_rate"), 2),
             "tax_amount":     flt(row.get("tax_amount")),
+            "payment_status": row.get("payment_status") or "Unpaid",
             "payment_date":   row.get("payment_date"),
             "invoice_number": row.get("invoice_number"),
         })
@@ -251,10 +297,11 @@ def get_data(filters):
 
 def build_conditions(filters):
     """
-    from_date/to_date filter on wtm.payment_date, not the invoice's own date —
-    this is a KRA remittance filing report (only Paid WTM records are shown at
-    all), so the relevant period is when the withholding was actually paid
-    over to KRA, not when the underlying purchase invoice was raised.
+    from_date/to_date filter on wtm.payment_date (the remittance date) when
+    the invoice has one; unpaid remittances (wtm.payment_date is NULL, shown
+    whenever Remittance Status isn't restricted to 'Paid') fall back to the
+    invoice's bill_date / posting_date so they aren't silently dropped from
+    every date-filtered result.
     """
     conditions = []
     params = []
@@ -263,12 +310,14 @@ def build_conditions(filters):
         conditions.append("pi.company = %s")
         params.append(filters["company"])
 
+    date_expr = "COALESCE(wtm.payment_date, pi.bill_date, pi.posting_date)"
+
     if filters.get("from_date"):
-        conditions.append("wtm.payment_date >= %s")
+        conditions.append("{0} >= %s".format(date_expr))
         params.append(filters["from_date"])
 
     if filters.get("to_date"):
-        conditions.append("wtm.payment_date <= %s")
+        conditions.append("{0} <= %s".format(date_expr))
         params.append(filters["to_date"])
 
     if filters.get("supplier"):

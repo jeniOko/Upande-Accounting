@@ -5,7 +5,10 @@
  * Withholding VAT KRA Report
  * ===========================
  * KRA Withholding VAT filing report.
- * Only paid WHT VAT records are shown (payment_status = Paid on WTM).
+ * Only shows invoices that have actually been paid to the supplier
+ * (WTM.suggested_for_payment = 1). By default only Unpaid remittances are
+ * shown (withheld VAT not yet paid over to KRA) — switch Remittance Status
+ * to see Paid or All records.
  * Download as XLSX or CSV via the action buttons.
  */
 
@@ -22,17 +25,27 @@ frappe.query_reports["Withholding VAT KRA Report"] = {
 		},
 		{
 			fieldname: "from_date",
-			label: __("Payment Date From"),
+			label: __("From Date"),
 			fieldtype: "Date",
-			default: frappe.datetime.month_start(),
+			default: frappe.datetime.year_start(),
 			reqd: 1,
+			description: __("Filters by withholding payment date; unpaid remittances fall back to the invoice date."),
 		},
 		{
 			fieldname: "to_date",
-			label: __("Payment Date To"),
+			label: __("To Date"),
 			fieldtype: "Date",
 			default: frappe.datetime.month_end(),
 			reqd: 1,
+			description: __("Filters by withholding payment date; unpaid remittances fall back to the invoice date."),
+		},
+		{
+			fieldname: "remittance_status",
+			label: __("Remittance Status"),
+			fieldtype: "Select",
+			options: "Unpaid\nPaid\nAll",
+			default: "Unpaid",
+			description: __("Unpaid = withheld VAT not yet remitted to KRA. Only invoices already paid to the supplier are ever shown."),
 		},
 		{
 			fieldname: "withholding_account",
@@ -76,6 +89,12 @@ frappe.query_reports["Withholding VAT KRA Report"] = {
 
 		if (column.fieldname === "tax_id" && !data.tax_id) {
 			value = `<span style="color:#c0392b;">PIN Missing</span>`;
+		}
+
+		if (column.fieldname === "payment_status") {
+			value = data.payment_status === "Paid"
+				? `<span style="color:#27ae60;">Paid</span>`
+				: `<span style="color:#c0392b; font-weight:600;">Unpaid</span>`;
 		}
 
 		return value;

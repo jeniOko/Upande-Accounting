@@ -15,7 +15,11 @@ Payment date is shown from the linked Withholding Tax Management record (null if
 
 From Date / To Date filter on wtm.payment_date (the remittance date) where the
 invoice has one; unpaid invoices fall back to the invoice's own posting_date
-so they still appear when Paid Invoices Only is unchecked.
+so they still appear when Payment Status is set to Unpaid or All.
+
+Payment Status filter (Paid / Unpaid / All, default Paid) restricts on
+pi.status: 'Paid' for fully paid invoices, 'Unpaid' for anything not marked
+Paid (Overdue, Partly Paid, etc.), or no restriction for All.
 
 Accounts resolved via is_tax_report_account + tax_report_type = "Withholding Tax".
 Nature of Transaction resolved per tax row via:
@@ -45,14 +49,31 @@ def execute(filters=None):
     validate_filters(filters)
     columns = get_columns()
     data    = get_data(filters)
-    message = None
-    if filters.get("paid_only", 1):
+    payment_status = (filters.get("payment_status") or "Paid").strip()
+    if payment_status == "All":
+        message = (
+            '<div style="padding:8px 12px; background:#e8f4fd; border-left:4px solid #2196f3; '
+            'border-radius:3px; color:#1a5276;">'
+            '<b>All Invoices</b> &mdash; Showing all submitted invoices with withholding tax, '
+            'regardless of payment status.'
+            '</div>'
+        )
+    elif payment_status == "Unpaid":
+        message = (
+            '<div style="padding:8px 12px; background:#e8f4fd; border-left:4px solid #2196f3; '
+            'border-radius:3px; color:#1a5276;">'
+            '<b>Unpaid Invoices Only</b> &mdash; This report is showing invoices with withholding '
+            'tax that are not yet fully paid. Switch <em>Payment Status</em> to <em>Paid</em> or '
+            '<em>All</em> to see other records.'
+            '</div>'
+        )
+    else:
         message = (
             '<div style="padding:8px 12px; background:#e8f4fd; border-left:4px solid #2196f3; '
             'border-radius:3px; color:#1a5276;">'
             '<b>Paid Invoices Only</b> &mdash; This report is showing only fully paid invoices '
-            'that have withholding tax. Uncheck <em>Paid Invoices Only</em> to include all '
-            'submitted invoices regardless of payment status.'
+            'that have withholding tax. Switch <em>Payment Status</em> to <em>Unpaid</em> or '
+            '<em>All</em> to include invoices regardless of payment status.'
             '</div>'
         )
     return columns, data, message
@@ -325,8 +346,12 @@ def build_conditions(filters):
         conditions.append("pi.supplier = %s")
         params.append(filters["supplier"])
 
-    if filters.get("paid_only", 1):
+    payment_status = (filters.get("payment_status") or "Paid").strip()
+    if payment_status == "Paid":
         conditions.append("pi.status = 'Paid'")
+    elif payment_status == "Unpaid":
+        conditions.append("pi.status != 'Paid'")
+    # "All" -> no payment-status restriction
 
     cond_str = ("AND " + " AND ".join(conditions)) if conditions else ""
     return cond_str, params

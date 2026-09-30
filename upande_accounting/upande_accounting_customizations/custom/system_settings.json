@@ -1,0 +1,41 @@
+{
+ "custom_fields": [
+  {
+   "creation": "2026-09-30 00:00:00",
+   "description": "Decimal places for Currency columns in reports only (stored values and calculations are unchanged). Leave blank to use Currency Precision.",
+   "docstatus": 0,
+   "dt": "System Settings",
+   "fieldname": "custom_report_currency_precision",
+   "fieldtype": "Select",
+   "insert_after": "currency_precision",
+   "label": "Report Currency Precision",
+   "modified": "2026-09-30 00:00:00",
+   "modified_by": "Administrator",
+   "module": "Upande Accounting Customizations",
+   "name": "System Settings-custom_report_currency_precision",
+   "options": "\n0\n1\n2\n3\n4\n5\n6\n7\n8\n9",
+   "owner": "Administrator"
+  },
+  {
+   "creation": "2026-09-30 00:00:00",
+   "description": "Decimal places for Float columns in reports only (stored values and calculations are unchanged). Leave blank to use Float Precision.",
+   "docstatus": 0,
+   "dt": "System Settings",
+   "fieldname": "custom_report_float_precision",
+   "fieldtype": "Select",
+   "insert_after": "custom_report_currency_precision",
+   "label": "Report Float Precision",
+   "modified": "2026-09-30 00:00:00",
+   "modified_by": "Administrator",
+   "module": "Upande Accounting Customizations",
+   "name": "System Settings-custom_report_float_precision",
+   "options": "\n0\n1\n2\n3\n4\n5\n6\n7\n8\n9",
+   "owner": "Administrator"
+  }
+ ],
+ "custom_perms": [],
+ "doctype": "System Settings",
+ "links": [],
+ "property_setters": [],
+ "sync_on_migrate": 1
+}

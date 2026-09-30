@@ -246,6 +246,9 @@ doctype_js = {
 # Overriding Methods
 # ------------------------------
 #
+override_whitelisted_methods = {
+    "frappe.desk.query_report.run": "upande_accounting.report_formatting.run_query_report",
+}
 # override_whitelisted_methods = {
 # 	"frappe.desk.doctype.event.event.get_events": "upande_accounting.event.get_events"
 # }

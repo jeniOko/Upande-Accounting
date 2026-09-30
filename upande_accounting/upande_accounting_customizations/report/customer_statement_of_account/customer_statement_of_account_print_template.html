@@ -259,7 +259,7 @@
 {%- set ns = namespace(closing=0, total_debit=0.0, total_credit=0.0) -%}
 {%- for row in data -%}
   {%- if row.is_closing -%}{%- set ns.closing = row.balance -%}{%- endif -%}
-  {%- if not row.is_opening and not row.is_closing -%}
+  {%- if not row.is_opening and not row.is_closing and not row.is_total -%}
     {%- set ns.total_debit  = ns.total_debit  + (row.debit  | float) -%}
     {%- set ns.total_credit = ns.total_credit + (row.credit | float) -%}
   {%- endif -%}
@@ -276,15 +276,15 @@
   <div class="summary-boxes">
     <div class="summary-box">
       <div class="box-label">Total Invoiced</div>
-      <div class="box-value">{{ frappe.format(ns.total_debit,  {"fieldtype":"Currency"}, currency=currency) }}</div>
+      <div class="box-value">{{ format_amount(ns.total_debit) }}</div>
     </div>
     <div class="summary-box">
       <div class="box-label">Total Receipts</div>
-      <div class="box-value">{{ frappe.format(ns.total_credit, {"fieldtype":"Currency"}, currency=currency) }}</div>
+      <div class="box-value">{{ format_amount(ns.total_credit) }}</div>
     </div>
     <div class="summary-box balance-due">
       <div class="box-label">Balance Due</div>
-      <div class="box-value">{{ frappe.format(ns.closing, {"fieldtype":"Currency"}, currency=currency) }}</div>
+      <div class="box-value">{{ format_amount(ns.closing) }}</div>
     </div>
   </div>
 </div>
@@ -306,21 +306,21 @@
   <tbody>
   {%- for row in data -%}
 
-    {%- if row.is_opening or row.is_closing -%}
+    {%- if row.is_opening or row.is_closing or row.is_total -%}
     <tr class="system-row">
       <td>{{ frappe.format(row.posting_date, "Date") if row.posting_date else "" }}</td>
       <td colspan="4">{{ row.description }}</td>
       <td class="num">
         {%- if row.debit is not none and row.debit != "" -%}
-          {{ frappe.format(row.debit, {"fieldtype":"Currency"}, currency=currency) }}
+          {{ format_amount(row.debit) }}
         {%- endif -%}
       </td>
       <td class="num">
         {%- if row.credit is not none and row.credit != "" -%}
-          {{ frappe.format(row.credit, {"fieldtype":"Currency"}, currency=currency) }}
+          {{ format_amount(row.credit) }}
         {%- endif -%}
       </td>
-      <td class="num">{{ frappe.format(row.balance, {"fieldtype":"Currency"}, currency=currency) }}</td>
+      <td class="num">{%- if row.balance is not none -%}{{ format_amount(row.balance) }}{%- endif -%}</td>
     </tr>
 
     {%- else -%}
@@ -331,12 +331,12 @@
       <td>{{ row.description or "" }}</td>
       <td>{{ frappe.format(row.due_date, "Date") if row.due_date else "" }}</td>
       <td class="num">
-        {%- if row.debit -%}{{ frappe.format(row.debit, {"fieldtype":"Currency"}, currency=currency) }}{%- endif -%}
+        {%- if row.debit -%}{{ format_amount(row.debit) }}{%- endif -%}
       </td>
       <td class="num">
-        {%- if row.credit -%}{{ frappe.format(row.credit, {"fieldtype":"Currency"}, currency=currency) }}{%- endif -%}
+        {%- if row.credit -%}{{ format_amount(row.credit) }}{%- endif -%}
       </td>
-      <td class="num">{{ frappe.format(row.balance, {"fieldtype":"Currency"}, currency=currency) }}</td>
+      <td class="num">{{ format_amount(row.balance) }}</td>
     </tr>
     {%- endif -%}
 

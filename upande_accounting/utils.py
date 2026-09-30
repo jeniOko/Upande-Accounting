@@ -323,6 +323,57 @@ def _get_withholding_rate_for_date(category_name, posting_date):
 # exist by the time these run.
 # ---------------------------------------------------------------------------
 
+def _is_manual_tax_row(tax):
+    return tax.get("custom_manual_tax_amount") and tax.charge_type == "Actual"
+
+
+def capture_manual_tax_amounts(doc, _method=None):
+    """
+    Snapshot every tax row ticked Manual Amount (charge type Actual only)
+    before PurchaseInvoice.validate() runs ERPNext's tax withholding engine,
+    which zeroes every withholding row and then drops the ones it doesn't
+    recompute. restore_manual_tax_amounts puts them back afterwards.
+    """
+    manual = []
+    for tax in doc.get("taxes") or []:
+        if tax.get("custom_manual_tax_amount") and tax.charge_type != "Actual":
+            tax.custom_manual_tax_amount = 0
+        elif _is_manual_tax_row(tax):
+            # A stored item-wise breakup from the previous amount would fail
+            # ERPNext's breakup-vs-row check; let it rebuild from this amount.
+            tax.dont_recompute_tax = 0
+            row = tax.as_dict(no_default_fields=True)
+            manual.append((tax.idx, row))
+    doc.flags.manual_tax_rows = manual
+
+
+def restore_manual_tax_amounts(doc, _method=None):
+    """
+    Re-apply the rows captured by capture_manual_tax_amounts: reset the amount
+    on rows still present, and re-insert (at their original position) rows the
+    engine removed. Clearing dont_recompute_tax makes calculate_taxes_and_totals
+    rebuild the item-wise breakup from the manual amount instead of keeping the
+    engine's one; finalize_additional_withholding_totals refreshes totals later
+    in this same validate pass.
+    """
+    manual = doc.flags.get("manual_tax_rows") or []
+    if not manual:
+        return
+
+    present = {t.account_head: t for t in doc.get("taxes") or [] if _is_manual_tax_row(t)}
+    for idx, row in manual:
+        tax = present.get(row["account_head"])
+        if not tax:
+            tax = doc.append("taxes", row)
+            doc.taxes.remove(tax)
+            doc.taxes.insert(min(idx - 1, len(doc.taxes)), tax)
+        tax.tax_amount = row["tax_amount"]
+        tax.dont_recompute_tax = 0
+
+    for i, t in enumerate(doc.taxes):
+        t.idx = i + 1
+
+
 def remove_orphaned_withholding_tax_rows(doc, _method=None):
     """
     Remove 'additional' withholding tax rows (the ones apply_additional_withholding_rows
@@ -364,6 +415,7 @@ def remove_orphaned_withholding_tax_rows(doc, _method=None):
     new_taxes = [
         t for t in taxes
         if t.get("custom_withholding_override")
+        or _is_manual_tax_row(t)
         or t.account_head not in manageable_accounts
         or t.account_head in active_additional_accounts
     ]
@@ -552,7 +604,7 @@ def recalculate_withholding_tax_amounts(doc, _method=None):
 
     for tax in taxes:
         cat_name = account_category_map.get(tax.account_head)
-        if not cat_name:
+        if not cat_name or _is_manual_tax_row(tax):
             new_taxes.append(tax)
             continue
 
@@ -734,7 +786,7 @@ def recalculate_withholding_override_amounts(doc, _method=None):
     modified = False
 
     for tax in taxes:
-        if not tax.get("custom_withholding_override"):
+        if not tax.get("custom_withholding_override") or _is_manual_tax_row(tax):
             new_taxes.append(tax)
             continue
 

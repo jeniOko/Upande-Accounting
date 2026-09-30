@@ -11,6 +11,7 @@ frappe.query_reports["Supplier Statement Summary"] = {
                 from_date:     frappe.query_report.get_filter_value("from_date"),
                 to_date:       frappe.query_report.get_filter_value("to_date"),
                 include_draft: frappe.query_report.get_filter_value("include_draft") || 0,
+                decimal_places: frappe.query_report.get_filter_value("decimal_places") ?? 2,
             };
             frappe.set_route("query-report", "Supplier Ledger");
         });
@@ -27,6 +28,7 @@ frappe.query_reports["Supplier Statement Summary"] = {
                 from_date:     frappe.query_report.get_filter_value("from_date"),
                 to_date:       frappe.query_report.get_filter_value("to_date"),
                 include_draft: frappe.query_report.get_filter_value("include_draft") || 0,
+                decimal_places: frappe.query_report.get_filter_value("decimal_places") ?? 2,
             };
             frappe.set_route("query-report", "Supplier Ledger");
         });
@@ -69,6 +71,13 @@ frappe.query_reports["Supplier Statement Summary"] = {
             label:     __("Include Draft Bills"),
             fieldtype: "Check",
             default:   0,
+        },
+        {
+            fieldname:   "decimal_places",
+            label:       __("Decimal Places"),
+            fieldtype:   "Int",
+            default:     2,
+            description: __("Number of decimal places for amounts (0-9)"),
         },
     ],
 

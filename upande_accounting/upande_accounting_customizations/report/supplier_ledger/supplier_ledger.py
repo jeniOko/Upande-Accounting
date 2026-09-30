@@ -32,6 +32,8 @@ from frappe import _
 from frappe.utils import flt, getdate, nowdate
 from frappe.utils.pdf import get_pdf
 
+from upande_accounting.report_formatting import DEFAULT_DECIMAL_PLACES, format_amount, get_decimal_places
+
 
 # Exchange Gain Or Loss Journal Entries are system-generated forex revaluation/
 # rounding postings, not real supplier transactions — exclude them everywhere
@@ -49,7 +51,7 @@ EXCLUDE_FOREX_JE = """
 def execute(filters=None):
     filters = filters or {}
     validate_filters(filters)
-    columns = get_columns()
+    columns = get_columns(get_decimal_places(filters))
     data    = get_data(filters)
     return columns, data
 
@@ -70,7 +72,7 @@ def execute(filters=None):
 # through the "Print Statement" button.
 
 @frappe.whitelist()
-def download_statement_pdf(supplier, from_date, to_date, company=None, show_ageing=0, include_draft=0, currency=None):
+def download_statement_pdf(supplier, from_date, to_date, company=None, show_ageing=0, include_draft=0, currency=None, decimal_places=None):
     filters = frappe._dict({
         "supplier":      supplier,
         "from_date":     from_date,
@@ -96,7 +98,15 @@ def download_statement_pdf(supplier, from_date, to_date, company=None, show_agei
         "currency":  statement_currency,
     })
 
-    html = frappe.render_template(template, {"doc": doc_context, "data": data})
+    precision = get_decimal_places({"decimal_places": decimal_places})
+    html = frappe.render_template(
+        template,
+        {
+            "doc": doc_context,
+            "data": data,
+            "format_amount": lambda value: format_amount(value, statement_currency, precision),
+        },
+    )
 
     frappe.local.response.filename     = f"Supplier-Ledger-{supplier}-{to_date}.pdf"
     frappe.local.response.filecontent  = get_pdf(html)
@@ -120,7 +130,7 @@ def validate_filters(filters):
 # Columns
 # ---------------------------------------------------------------------------
 
-def get_columns():
+def get_columns(precision=DEFAULT_DECIMAL_PLACES):
     return [
         {
             "label": _("Date"),
@@ -141,6 +151,18 @@ def get_columns():
             "options": "voucher_type",
             "width": 240,
         },
+        {
+            "label": _("Supplier Invoice No"),
+            "fieldname": "bill_no",
+            "fieldtype": "Data",
+            "width": 160,
+        },
+        {
+            "label": _("Supplier Invoice Date"),
+            "fieldname": "bill_date",
+            "fieldtype": "Date",
+            "width": 130,
+        },
         # {
         #     "label": _("Description"),
         #     "fieldname": "description",
@@ -158,6 +180,7 @@ def get_columns():
             "fieldname": "debit",
             "fieldtype": "Currency",
             "options": "currency",
+            "precision": precision,
             "width": 130,
         },
         {
@@ -165,6 +188,7 @@ def get_columns():
             "fieldname": "credit",
             "fieldtype": "Currency",
             "options": "currency",
+            "precision": precision,
             "width": 130,
         },
         {
@@ -172,6 +196,7 @@ def get_columns():
             "fieldname": "balance",
             "fieldtype": "Currency",
             "options": "currency",
+            "precision": precision,
             "width": 140,
         },
         {
@@ -214,30 +239,39 @@ def resolve_voucher(voucher_type, voucher_no):
         display_date  — date to show (reference_date for payments, else posting_date)
         description   — narrative text
         due_date      — bill due date or None
+        bill_no       — supplier's invoice number (Purchase Invoice only)
+        bill_date     — supplier's invoice date (Purchase Invoice only)
     """
     result = {
         "display_type": voucher_type,
         "display_date": None,
         "description":  "",
         "due_date":     None,
+        "bill_no":      None,
+        "bill_date":    None,
     }
 
     try:
         if voucher_type == "Draft Purchase Invoice":
             result["display_type"] = _("Draft Bill")
             result["description"]  = _("Draft Bill (unsubmitted)")
+            result["bill_no"], result["bill_date"] = frappe.db.get_value(
+                "Purchase Invoice", voucher_no, ["bill_no", "bill_date"]
+            ) or (None, None)
             return result
 
         if voucher_type == "Purchase Invoice":
             row = frappe.db.get_value(
                 "Purchase Invoice", voucher_no,
-                ["is_return", "remarks", "due_date"],
+                ["is_return", "remarks", "due_date", "bill_no", "bill_date"],
                 as_dict=True,
             )
             if row:
                 result["display_type"] = _("Debit Note") if row.is_return else _("Bill")
                 result["description"]  = row.remarks or result["display_type"]
                 result["due_date"]     = row.due_date
+                result["bill_no"]      = row.bill_no
+                result["bill_date"]    = row.bill_date
 
         elif voucher_type == "Payment Entry":
             row = frappe.db.get_value(
@@ -430,19 +464,24 @@ def get_data(filters):
         "voucher_no":   "",
         "description":  _("Opening Balance"),
         "due_date":     None,
-        "debit":        opening_debit  if opening_balance <  0 else 0,
-        "credit":       opening_credit if opening_balance >= 0 else 0,
+        "debit":        -opening_balance if opening_balance <  0 else 0,
+        "credit":       opening_balance  if opening_balance >= 0 else 0,
         "balance":      opening_balance,
         "currency":     currency,
         "is_opening":   True,
     })
 
+    # Payments show their reference_date, so sort on the date actually displayed
+    # (stable sort keeps posting order for same-day rows) before accumulating the balance.
+    for txn in all_txns:
+        txn.resolved = resolve_voucher(txn.voucher_type, txn.voucher_no)
+        txn.display_date = txn.resolved["display_date"] or txn.posting_date
+    all_txns.sort(key=lambda t: getdate(t.display_date))
+
     for txn in all_txns:
         running_balance += flt(txn.credit) - flt(txn.debit)
-        resolved = resolve_voucher(txn.voucher_type, txn.voucher_no)
-
-        # For payments use reference_date when available, else fall back to posting_date
-        display_date = resolved["display_date"] or txn.posting_date
+        resolved = txn.resolved
+        display_date = txn.display_date
 
         is_draft   = (txn.voucher_type == "Draft Purchase Invoice")
         due_date   = resolved["due_date"]
@@ -468,6 +507,8 @@ def get_data(filters):
             "voucher_type":  txn.voucher_type,
             "display_type":  resolved["display_type"],
             "voucher_no":    txn.voucher_no,
+            "bill_no":       resolved["bill_no"],
+            "bill_date":     resolved["bill_date"],
             "description":   resolved["description"],
             "due_date":      due_date,
             "debit":         flt(txn.debit),
@@ -478,7 +519,23 @@ def get_data(filters):
             "ageing_level":  row_ageing_level,
         })
 
-    # Closing balance row
+    # Total row (period movements only), like the General Ledger's "Total" line
+    period_rows = [r for r in data if not r.get("is_opening")]
+    data.append({
+        "posting_date": None,
+        "voucher_type": "",
+        "display_type": _("Total"),
+        "voucher_no":   "",
+        "description":  _("Total"),
+        "due_date":     None,
+        "debit":        sum(flt(r["debit"]) for r in period_rows),
+        "credit":       sum(flt(r["credit"]) for r in period_rows),
+        "balance":      None,
+        "currency":     currency,
+        "is_total":     True,
+    })
+
+    # Closing balance row: opening + total, like the General Ledger
     data.append({
         "posting_date": to_date,
         "voucher_type": "",
@@ -486,8 +543,8 @@ def get_data(filters):
         "voucher_no":   "",
         "description":  _("Closing Balance"),
         "due_date":     None,
-        "debit":        "",
-        "credit":       "",
+        "debit":        data[0]["debit"] + data[-1]["debit"],
+        "credit":       data[0]["credit"] + data[-1]["credit"],
         "balance":      running_balance,
         "currency":     currency,
         "is_closing":   True,

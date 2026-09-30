@@ -45,6 +45,7 @@ frappe.query_reports["Supplier Ledger"] = {
                 from_date:     frappe.query_report.get_filter_value("from_date"),
                 to_date:       frappe.query_report.get_filter_value("to_date"),
                 include_draft: frappe.query_report.get_filter_value("include_draft") || 0,
+                decimal_places: frappe.query_report.get_filter_value("decimal_places") ?? 2,
             };
             frappe.set_route("query-report", "Supplier Statement Summary");
         });
@@ -72,6 +73,7 @@ frappe.query_reports["Supplier Ledger"] = {
                 show_ageing:   frappe.query_report.get_filter_value("show_ageing") || 0,
                 include_draft: frappe.query_report.get_filter_value("include_draft") || 0,
                 currency:      frappe.query_report.get_filter_value("currency") || "",
+                decimal_places: frappe.query_report.get_filter_value("decimal_places") ?? 2,
             });
 
             window.open(
@@ -135,6 +137,13 @@ frappe.query_reports["Supplier Ledger"] = {
             default: 0,
         },
         {
+            fieldname:   "decimal_places",
+            label:       __("Decimal Places"),
+            fieldtype:   "Int",
+            default:     2,
+            description: __("Number of decimal places for amounts (0-9)"),
+        },
+        {
             fieldname: "show_ageing",
             label: __("Show Ageing Summary"),
             fieldtype: "Check",
@@ -157,7 +166,7 @@ frappe.query_reports["Supplier Ledger"] = {
         if (!data) return value;
 
         // Opening / closing balance — bold all cells
-        if (data.is_opening || data.is_closing) {
+        if (data.is_opening || data.is_closing || data.is_total) {
             value = `<strong>${value || ""}</strong>`;
         }
 

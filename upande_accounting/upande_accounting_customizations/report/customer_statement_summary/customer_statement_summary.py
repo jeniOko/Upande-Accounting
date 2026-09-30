@@ -13,6 +13,7 @@ Columns:
 Filters:
   company, from_date, to_date,
   show_in_company_currency (Check) — toggle party vs base currency,
+  decimal_places (Int) — decimals shown on amounts (default 2),
   include_draft (Check) — add unsubmitted SI amounts to closing balance.
 
 Clicking a customer row navigates to Customer Statement Of Account
@@ -22,6 +23,8 @@ with the same company/date/draft filters pre-filled (handled in JS).
 import frappe
 from frappe import _
 from frappe.utils import flt
+
+from upande_accounting.report_formatting import get_decimal_places
 
 
 def execute(filters=None):
@@ -51,6 +54,7 @@ def get_columns(filters):
     show_base = filters.get("show_in_company_currency")
     currency_label = _("Company Currency") if show_base else _("Currency")
     amount_options = "" if show_base else "currency"
+    precision = get_decimal_places(filters)
 
     return [
         {
@@ -72,6 +76,7 @@ def get_columns(filters):
             "fieldname": "opening_balance",
             "fieldtype": "Currency",
             "options":   amount_options,
+            "precision": precision,
             "width":     150,
         },
         {
@@ -79,6 +84,7 @@ def get_columns(filters):
             "fieldname": "period_debit",
             "fieldtype": "Currency",
             "options":   amount_options,
+            "precision": precision,
             "width":     150,
         },
         {
@@ -86,6 +92,7 @@ def get_columns(filters):
             "fieldname": "period_credit",
             "fieldtype": "Currency",
             "options":   amount_options,
+            "precision": precision,
             "width":     150,
         },
         {
@@ -93,6 +100,7 @@ def get_columns(filters):
             "fieldname": "closing_balance",
             "fieldtype": "Currency",
             "options":   amount_options,
+            "precision": precision,
             "width":     150,
         },
     ]

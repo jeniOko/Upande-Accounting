@@ -11,6 +11,7 @@ frappe.query_reports["Customer Statement Of Account"] = {
                 from_date:     frappe.query_report.get_filter_value("from_date"),
                 to_date:       frappe.query_report.get_filter_value("to_date"),
                 include_draft: frappe.query_report.get_filter_value("include_draft") || 0,
+                decimal_places: frappe.query_report.get_filter_value("decimal_places") ?? 2,
             };
             frappe.set_route("query-report", "Customer Statement Summary");
         });
@@ -36,6 +37,7 @@ frappe.query_reports["Customer Statement Of Account"] = {
                 from_date:     from_date,
                 to_date:       to_date,
                 include_draft: frappe.query_report.get_filter_value("include_draft") || 0,
+                decimal_places: frappe.query_report.get_filter_value("decimal_places") ?? 2,
             });
 
             window.open(
@@ -82,6 +84,13 @@ frappe.query_reports["Customer Statement Of Account"] = {
             fieldtype: "Check",
             default: 0,
         },
+        {
+            fieldname: "decimal_places",
+            label: __("Decimal Places"),
+            fieldtype: "Int",
+            default: 2,
+            description: __("Number of decimal places for amounts (0-9)"),
+        },
     ],
 
     // ------------------------------------------------------------------
@@ -92,7 +101,7 @@ frappe.query_reports["Customer Statement Of Account"] = {
         if (!data) return value;
 
         // Opening / closing balance — bold all cells
-        if (data.is_opening || data.is_closing) {
+        if (data.is_opening || data.is_closing || data.is_total) {
             value = `<strong>${value || ""}</strong>`;
         }
 

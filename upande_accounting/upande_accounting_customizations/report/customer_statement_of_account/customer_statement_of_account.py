@@ -26,6 +26,8 @@ from frappe import _
 from frappe.utils import flt, getdate
 from frappe.utils.pdf import get_pdf
 
+from upande_accounting.report_formatting import DEFAULT_DECIMAL_PLACES, format_amount, get_decimal_places
+
 
 # Exchange Gain Or Loss Journal Entries are system-generated forex revaluation/
 # rounding postings, not real customer transactions — exclude them everywhere
@@ -43,7 +45,7 @@ EXCLUDE_FOREX_JE = """
 def execute(filters=None):
     filters = filters or {}
     validate_filters(filters)
-    columns = get_columns()
+    columns = get_columns(get_decimal_places(filters))
     data    = get_data(filters)
     return columns, data
 
@@ -64,7 +66,7 @@ def execute(filters=None):
 # through the "Print Statement" button.
 
 @frappe.whitelist()
-def download_statement_pdf(customer, from_date, to_date, company=None, include_draft=0):
+def download_statement_pdf(customer, from_date, to_date, company=None, include_draft=0, decimal_places=None):
     filters = frappe._dict({
         "customer":      customer,
         "from_date":     from_date,
@@ -92,7 +94,15 @@ def download_statement_pdf(customer, from_date, to_date, company=None, include_d
         "currency":  statement_currency,
     })
 
-    html = frappe.render_template(template, {"doc": doc_context, "data": data})
+    precision = get_decimal_places({"decimal_places": decimal_places})
+    html = frappe.render_template(
+        template,
+        {
+            "doc": doc_context,
+            "data": data,
+            "format_amount": lambda value: format_amount(value, statement_currency, precision),
+        },
+    )
 
     frappe.local.response.filename     = f"Statement-{customer}-{to_date}.pdf"
     frappe.local.response.filecontent  = get_pdf(html)
@@ -112,11 +122,13 @@ def validate_filters(filters):
         frappe.throw(_("From Date cannot be after To Date."))
 
 
+
+
 # ---------------------------------------------------------------------------
 # Columns
 # ---------------------------------------------------------------------------
 
-def get_columns():
+def get_columns(precision=DEFAULT_DECIMAL_PLACES):
     return [
         {
             "label": _("Date"),
@@ -154,6 +166,7 @@ def get_columns():
             "fieldname": "debit",
             "fieldtype": "Currency",
             "options": "currency",
+            "precision": precision,
             "width": 130,
         },
         {
@@ -161,6 +174,7 @@ def get_columns():
             "fieldname": "credit",
             "fieldtype": "Currency",
             "options": "currency",
+            "precision": precision,
             "width": 130,
         },
         {
@@ -168,6 +182,7 @@ def get_columns():
             "fieldname": "balance",
             "fieldtype": "Currency",
             "options": "currency",
+            "precision": precision,
             "width": 140,
         },
         {
@@ -425,8 +440,8 @@ def get_data(filters):
         "voucher_no":   "",
         "description":  _("Opening Balance"),
         "due_date":     None,
-        "debit":        opening_debit  if opening_balance >= 0 else 0,
-        "credit":       opening_credit if opening_balance <  0 else 0,
+        "debit":        opening_balance  if opening_balance >= 0 else 0,
+        "credit":       -opening_balance if opening_balance <  0 else 0,
         "balance":      opening_balance,
         "currency":     currency,
         "is_opening":   True,
@@ -473,7 +488,23 @@ def get_data(filters):
             "ageing_level":  row_ageing_level,
         })
 
-    # Closing balance row
+    # Total row (period movements only), like the General Ledger's "Total" line
+    period_rows = [r for r in data if not r.get("is_opening")]
+    data.append({
+        "posting_date": None,
+        "voucher_type": "",
+        "display_type": _("Total"),
+        "voucher_no":   "",
+        "description":  _("Total"),
+        "due_date":     None,
+        "debit":        sum(flt(r["debit"]) for r in period_rows),
+        "credit":       sum(flt(r["credit"]) for r in period_rows),
+        "balance":      None,
+        "currency":     currency,
+        "is_total":     True,
+    })
+
+    # Closing balance row: opening + total, like the General Ledger
     data.append({
         "posting_date": to_date,
         "voucher_type": "",
@@ -481,8 +512,8 @@ def get_data(filters):
         "voucher_no":   "",
         "description":  _("Closing Balance"),
         "due_date":     None,
-        "debit":        "",
-        "credit":       "",
+        "debit":        data[0]["debit"] + data[-1]["debit"],
+        "credit":       data[0]["credit"] + data[-1]["credit"],
         "balance":      running_balance,
         "currency":     currency,
         "is_closing":   True,

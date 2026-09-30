@@ -1,0 +1,40 @@
+{
+ "custom_fields": [
+  {
+   "collapsible": 1,
+   "creation": "2026-09-29 00:00:00.000000",
+   "docstatus": 0,
+   "dt": "Cost Center",
+   "fieldname": "custom_related_dimensions_section",
+   "fieldtype": "Section Break",
+   "insert_after": "old_parent",
+   "label": "Related Accounting Dimensions",
+   "modified": "2026-09-29 00:00:00.000000",
+   "modified_by": "Administrator",
+   "module": "Upande Accounting Customizations",
+   "name": "Cost Center-custom_related_dimensions_section",
+   "owner": "Administrator"
+  },
+  {
+   "creation": "2026-09-29 00:00:00.000000",
+   "description": "Link this cost center to other accounting dimensions (e.g. Projects). The Budget Variance (Comprehensive) report uses these links to show this cost center's budget when filtering by a linked dimension.",
+   "docstatus": 0,
+   "dt": "Cost Center",
+   "fieldname": "custom_related_dimensions",
+   "fieldtype": "Table",
+   "insert_after": "custom_related_dimensions_section",
+   "label": "Related Dimensions",
+   "modified": "2026-09-29 00:00:00.000000",
+   "modified_by": "Administrator",
+   "module": "Upande Accounting Customizations",
+   "name": "Cost Center-custom_related_dimensions",
+   "options": "Cost Center Related Dimension",
+   "owner": "Administrator"
+  }
+ ],
+ "custom_perms": [],
+ "doctype": "Cost Center",
+ "links": [],
+ "property_setters": [],
+ "sync_on_migrate": 1
+}

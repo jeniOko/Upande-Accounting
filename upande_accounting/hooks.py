@@ -36,6 +36,9 @@ fixtures = [
     },
 ]
 doc_events = {
+    "Cost Center": {
+        "validate": "upande_accounting.cost_center_dimensions.validate_related_dimensions",
+    },
     "Item": {
         "validate": "upande_accounting.utils.validate_item_type",
     },
@@ -101,6 +104,7 @@ doc_events = {
 
 # include js in doctype views
 doctype_js = {
+    "Cost Center": "public/js/cost_center.js",
     "Item": "public/js/item.js",
     "Journal Entry": "public/js/journal_entry.js",
     "Payment Entry": "public/js/payment_entry.js",

@@ -309,21 +309,40 @@ def get_draft_transactions(customer, company, from_date, to_date):
     return rows
 
 
+# Voucher types shown as ONE net line instead of separate debit/credit lines.
+# A receipt that also allocates a credit note posts a debit leg (the credit
+# note being consumed) plus a larger credit leg (invoices settled). Netting
+# them leaves only the actual cash received on the statement.
+NET_VOUCHER_TYPES = {"Payment Entry"}
+
+
 def split_by_side(all_txns):
     """
-    Collapse GL-entry rows belonging to the same voucher, but keep debits
-    and credits on separate statement lines.
+    Collapse GL-entry rows belonging to the same voucher.
 
-    - A Payment Entry allocated against several invoices creates one GL Entry
-      per allocation; those still collapse into a single credit line showing
-      the total received.
-    - A voucher that both debits and credits the customer (e.g. a Journal
-      Entry, or a Payment Entry with a deduction/refund leg) is shown as two
-      lines: the debit line first, then the credit line.
+    - Payment Entries (receipts) are netted into a single line, so credit
+      notes allocated inside the receipt don't appear; only the actual
+      amount received is shown (e.g. Dr 152.15 / Cr 5,152.15 → Cr 5,000.00).
+    - Every other voucher that both debits and credits the customer (e.g. a
+      Journal Entry) is shown as two lines: debit first, then credit.
     """
     grouped = OrderedDict()
     for txn in all_txns:
         vt, vn = txn.get("voucher_type"), txn.get("voucher_no")
+
+        if vt in NET_VOUCHER_TYPES:
+            key = (vt, vn, "net")
+            if key not in grouped:
+                grouped[key] = frappe._dict({
+                    "posting_date": txn.get("posting_date"),
+                    "voucher_type": vt,
+                    "voucher_no":   vn,
+                    "debit":        0,
+                    "credit":       0,
+                })
+            grouped[key].debit  += flt(txn.get("debit"))
+            grouped[key].credit += flt(txn.get("credit"))
+            continue
 
         # Reserve debit-then-credit slots the first time a voucher is seen,
         # so the debit line always precedes the credit line.
@@ -341,8 +360,18 @@ def split_by_side(all_txns):
         grouped[(vt, vn, "debit")].debit   += flt(txn.get("debit"))
         grouped[(vt, vn, "credit")].credit += flt(txn.get("credit"))
 
-    # Drop empty slots (e.g. an invoice that has no credit side)
-    return [g for g in grouped.values() if flt(g.debit) or flt(g.credit)]
+    result = []
+    for g in grouped.values():
+        if g.voucher_type in NET_VOUCHER_TYPES:
+            net = flt(flt(g.debit) - flt(g.credit), 6)
+            g.debit  = net  if net > 0 else 0
+            g.credit = -net if net < 0 else 0
+
+        # Drop empty slots (e.g. an invoice that has no credit side)
+        if flt(g.debit) or flt(g.credit):
+            result.append(g)
+
+    return result
 
 
 def get_data(filters):

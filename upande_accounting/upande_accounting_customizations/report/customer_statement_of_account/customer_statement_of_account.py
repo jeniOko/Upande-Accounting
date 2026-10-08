@@ -32,17 +32,26 @@ from frappe.utils.pdf import get_pdf
 from upande_accounting.report_formatting import DEFAULT_DECIMAL_PLACES, format_amount, get_decimal_places
 
 
-# Exchange Gain Or Loss Journal Entries are system-generated forex revaluation/
-# rounding postings, not real customer transactions — exclude them everywhere
-# GL Entry is queried in this report (opening balance, transactions).
-EXCLUDE_FOREX_JE = """
+# System-generated Journal Entries are not real customer transactions, so they
+# are excluded everywhere GL Entry is queried in this report (opening balance
+# and transactions). This covers:
+#   - Exchange Gain Or Loss JEs (forex revaluation / rounding postings)
+#   - Any JE flagged is_system_generated = 1, e.g. the JEs ERPNext creates
+#     when Payment Reconciliation allocates a credit note against an invoice
+def get_exclude_system_je_clause():
+    conditions = ["je.voucher_type = 'Exchange Gain Or Loss'"]
+    # is_system_generated only exists on newer ERPNext versions
+    if frappe.db.has_column("Journal Entry", "is_system_generated"):
+        conditions.append("je.is_system_generated = 1")
+
+    return """
     AND NOT EXISTS (
         SELECT 1 FROM `tabJournal Entry` je
         WHERE je.name = gle.voucher_no
           AND gle.voucher_type = 'Journal Entry'
-          AND je.voucher_type = 'Exchange Gain Or Loss'
+          AND ({conditions})
     )
-"""
+""".format(conditions=" OR ".join(conditions))
 
 
 def execute(filters=None):
@@ -392,7 +401,8 @@ def get_data(filters):
         frappe.msgprint(_("No receivable accounts found for this company."))
         return []
 
-    acc_placeholders = ", ".join(["%s"] * len(accounts))
+    acc_placeholders  = ", ".join(["%s"] * len(accounts))
+    exclude_system_je = get_exclude_system_je_clause()
 
     # ------------------------------------------------------------------
     # 1. Opening balance — all GL entries BEFORE from_date
@@ -408,11 +418,11 @@ def get_data(filters):
             AND gle.account  IN ({acc})
             AND gle.posting_date < %s
             AND gle.is_cancelled  = 0
-            {exclude_forex_je}
+            {exclude_system_je}
             {company_cond}
     """.format(
         acc=acc_placeholders,
-        exclude_forex_je=EXCLUDE_FOREX_JE,
+        exclude_system_je=exclude_system_je,
         company_cond="AND gle.company = %s" if company else "",
     )
 
@@ -442,14 +452,14 @@ def get_data(filters):
             AND gle.account  IN ({acc})
             AND gle.posting_date BETWEEN %s AND %s
             AND gle.is_cancelled  = 0
-            {exclude_forex_je}
+            {exclude_system_je}
             {company_cond}
         ORDER BY
             gle.posting_date ASC,
             gle.creation ASC
     """.format(
         acc=acc_placeholders,
-        exclude_forex_je=EXCLUDE_FOREX_JE,
+        exclude_system_je=exclude_system_je,
         company_cond="AND gle.company = %s" if company else "",
     )
 

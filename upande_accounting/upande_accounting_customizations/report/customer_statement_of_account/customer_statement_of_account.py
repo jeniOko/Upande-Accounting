@@ -15,6 +15,9 @@ Document type display labels:
   - Journal Entry                → "Journal Entry"
   - Others                       → voucher_type as-is
 
+A voucher that both debits and credits the customer is shown as two
+separate lines (debit first, then credit) rather than one combined line.
+
 Source: GL Entry against the customer's receivable account(s).
 """
 
@@ -122,8 +125,6 @@ def validate_filters(filters):
         frappe.throw(_("From Date cannot be after To Date."))
 
 
-
-
 # ---------------------------------------------------------------------------
 # Columns
 # ---------------------------------------------------------------------------
@@ -146,7 +147,7 @@ def get_columns(precision=DEFAULT_DECIMAL_PLACES):
             "label": _("Document No"),
             "fieldname": "voucher_no",
             "fieldtype": "Dynamic Link",
-            "options": "voucher_type",   
+            "options": "voucher_type",
             "width": 240,
         },
         # {
@@ -308,6 +309,42 @@ def get_draft_transactions(customer, company, from_date, to_date):
     return rows
 
 
+def split_by_side(all_txns):
+    """
+    Collapse GL-entry rows belonging to the same voucher, but keep debits
+    and credits on separate statement lines.
+
+    - A Payment Entry allocated against several invoices creates one GL Entry
+      per allocation; those still collapse into a single credit line showing
+      the total received.
+    - A voucher that both debits and credits the customer (e.g. a Journal
+      Entry, or a Payment Entry with a deduction/refund leg) is shown as two
+      lines: the debit line first, then the credit line.
+    """
+    grouped = OrderedDict()
+    for txn in all_txns:
+        vt, vn = txn.get("voucher_type"), txn.get("voucher_no")
+
+        # Reserve debit-then-credit slots the first time a voucher is seen,
+        # so the debit line always precedes the credit line.
+        for side in ("debit", "credit"):
+            key = (vt, vn, side)
+            if key not in grouped:
+                grouped[key] = frappe._dict({
+                    "posting_date": txn.get("posting_date"),
+                    "voucher_type": vt,
+                    "voucher_no":   vn,
+                    "debit":        0,
+                    "credit":       0,
+                })
+
+        grouped[(vt, vn, "debit")].debit   += flt(txn.get("debit"))
+        grouped[(vt, vn, "credit")].credit += flt(txn.get("credit"))
+
+    # Drop empty slots (e.g. an invoice that has no credit side)
+    return [g for g in grouped.values() if flt(g.debit) or flt(g.credit)]
+
+
 def get_data(filters):
     company       = filters.get("company")
     customer      = filters["customer"]
@@ -403,28 +440,8 @@ def get_data(filters):
     else:
         all_txns = list(transactions)
 
-    # Collapse GL-entry rows belonging to the same voucher into a single
-    # statement line. A Payment Entry reconciled against several invoices
-    # creates one GL Entry per allocation against the receivable account —
-    # without this, a single receipt would show up as one row per invoice
-    # it was allocated to instead of the total amount received.
-    grouped_txns = OrderedDict()
-    for txn in all_txns:
-        key = (txn.get("voucher_type"), txn.get("voucher_no"))
-        group = grouped_txns.get(key)
-        if group is None:
-            group = frappe._dict({
-                "posting_date": txn.get("posting_date"),
-                "voucher_type": txn.get("voucher_type"),
-                "voucher_no":   txn.get("voucher_no"),
-                "debit":        0,
-                "credit":       0,
-            })
-            grouped_txns[key] = group
-        group.debit  += flt(txn.get("debit"))
-        group.credit += flt(txn.get("credit"))
-
-    all_txns = list(grouped_txns.values())
+    # One line per voucher per side (debit / credit)
+    all_txns = split_by_side(all_txns)
 
     # ------------------------------------------------------------------
     # 3. Assemble rows
@@ -447,9 +464,17 @@ def get_data(filters):
         "is_opening":   True,
     })
 
+    # A voucher can now produce two lines (debit + credit); resolve it once.
+    resolved_cache = {}
+
     for txn in all_txns:
         running_balance += flt(txn.debit) - flt(txn.credit)
-        resolved = resolve_voucher(txn.voucher_type, txn.voucher_no)
+
+        cache_key = (txn.voucher_type, txn.voucher_no)
+        resolved = resolved_cache.get(cache_key)
+        if resolved is None:
+            resolved = resolve_voucher(txn.voucher_type, txn.voucher_no)
+            resolved_cache[cache_key] = resolved
 
         # For receipts use reference_date when available, else fall back to posting_date
         display_date = resolved["display_date"] or txn.posting_date

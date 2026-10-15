@@ -11,6 +11,8 @@ from erpnext.accounts.doctype.accounting_dimension.accounting_dimension import (
 )
 from erpnext.controllers.trends import get_period_date_ranges
 
+from upande_accounting.budget_variance import get_income_accounts, get_variance
+
 RELATED_DIMENSION_DOCTYPE = "Cost Center Related Dimension"
 
 
@@ -202,9 +204,11 @@ def build_budget_map(budgets):
 
 
 def build_actual_map(budgets, filters, dimension_fields, periods):
-	"""{(budget_against, dimension, account): {(year, month): debit - credit}}
+	"""{(budget_against, dimension, account): {(year, month): amount}}
 
-	Tree dimensions (e.g. Cost Center) include their descendants, matching ERPNext budget control.
+	Amounts are debit - credit, except for income accounts which are credit - debit so that
+	income actuals show as positive. Tree dimensions (e.g. Cost Center) include their
+	descendants, matching ERPNext budget control.
 	"""
 	actual_map = {}
 	budgets_by_type = {}
@@ -248,10 +252,12 @@ def build_actual_map(budgets, filters, dimension_fields, periods):
 			as_dict=True,
 		)
 
+		income_accounts = get_income_accounts(accounts)
 		gl_index = {}
 		for row in gl_rows:
 			monthly = gl_index.setdefault((row.account, row.dimension), {})
-			monthly[(row.year, row.month)] = flt(row.amount)
+			sign = -1 if row.account in income_accounts else 1
+			monthly[(row.year, row.month)] = sign * flt(row.amount) or 0.0
 
 		for budget in type_budgets:
 			key = (doctype, budget.dimension, budget.account)
@@ -275,6 +281,8 @@ def build_data(budget_map, actual_map, periods, filters, links):
 			for value in values:
 				cost_centers_by_value.setdefault((doctype, value), set()).add(cost_center)
 
+	income_accounts = get_income_accounts({key[2] for key in budget_map})
+
 	data = []
 	for key in sorted(budget_map, key=lambda k: (k[0] != "Cost Center", k[0], k[1], k[2])):
 		budget_against, dimension, account = key
@@ -286,6 +294,7 @@ def build_data(budget_map, actual_map, periods, filters, links):
 			dimension=dimension,
 			related_dimensions=get_related_label(budget_against, dimension, links, cost_centers_by_value),
 			account=account,
+			is_income=int(account in income_accounts),
 			currency=currency,
 		)
 
@@ -301,11 +310,11 @@ def build_data(budget_map, actual_map, periods, filters, links):
 			)
 			row[f"budget_{period.key}"] = shown_budget
 			row[f"actual_{period.key}"] = shown_actual
-			row[f"variance_{period.key}"] = shown_budget - shown_actual
+			row[f"variance_{period.key}"] = get_variance(shown_budget, shown_actual, row.is_income)
 
 		row.total_budget = total_budget
 		row.total_actual = total_actual
-		row.total_variance = total_budget - total_actual
+		row.total_variance = get_variance(total_budget, total_actual, row.is_income)
 		row.utilization = (total_actual / total_budget * 100) if total_budget else 0
 		data.append(row)
 
@@ -391,6 +400,7 @@ def get_columns(periods):
 		}
 	)
 	columns.append({"label": _("Currency"), "fieldname": "currency", "fieldtype": "Link", "options": "Currency", "hidden": 1})
+	columns.append({"label": _("Is Income"), "fieldname": "is_income", "fieldtype": "Check", "hidden": 1})
 	return columns
 
 

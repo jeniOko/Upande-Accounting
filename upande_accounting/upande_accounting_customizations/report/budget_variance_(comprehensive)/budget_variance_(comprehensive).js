@@ -1,17 +1,24 @@
 // Copyright (c) 2026, jeniffer@upande.com and contributors
 // For license information, please see license.txt
 
+{% include "upande_accounting/public/js/budget_variance.js" %}
+
 frappe.query_reports["Budget Variance (Comprehensive)"] = {
 	filters: get_dimensional_budget_filters(),
+	onload(report) {
+		upande_accounting.budget_variance.add_switch_button(report);
+	},
 	formatter(value, row, column, data, default_formatter) {
 		value = default_formatter(value, row, column, data);
 		if (!data) return value;
+		value = upande_accounting.budget_variance.mark_income_over_budget(value, column, data);
 
 		const raw = data[column.fieldname];
 		if (column.fieldname.includes("variance")) {
+			// Variance is signed so that positive is favourable, for income and expense alike.
 			if (raw < 0) value = `<span style="color:var(--red-600)">${value}</span>`;
 			else if (raw > 0) value = `<span style="color:var(--green-600)">${value}</span>`;
-		} else if (column.fieldname === "utilization") {
+		} else if (column.fieldname === "utilization" && !data.is_income) {
 			if (raw > 100) value = `<span style="color:var(--red-600);font-weight:600">${value}</span>`;
 			else if (raw >= 90) value = `<span style="color:var(--orange-600)">${value}</span>`;
 		}

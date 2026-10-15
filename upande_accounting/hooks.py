@@ -239,6 +239,9 @@ doctype_js = {
 # ------------------------------
 #
 # Specify custom mixins to extend the standard doctype controller.
+extend_doctype_class = {
+    "Report": "upande_accounting.budget_variance.ReportMixin",
+}
 # extend_doctype_class = {
 # 	"Task": "upande_accounting.custom.task.CustomTaskMixin"
 # }
@@ -248,6 +251,7 @@ doctype_js = {
 #
 override_whitelisted_methods = {
     "frappe.desk.query_report.run": "upande_accounting.report_formatting.run_query_report",
+    "frappe.desk.query_report.get_script": "upande_accounting.budget_variance.get_report_script",
 }
 # override_whitelisted_methods = {
 # 	"frappe.desk.doctype.event.event.get_events": "upande_accounting.event.get_events"

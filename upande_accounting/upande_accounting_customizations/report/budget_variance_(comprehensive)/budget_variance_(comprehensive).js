@@ -9,11 +9,19 @@ frappe.query_reports["Budget Variance (Comprehensive)"] = {
 		upande_accounting.budget_variance.add_switch_button(report);
 	},
 	formatter(value, row, column, data, default_formatter) {
+		// Group and total labels are plain text, not links.
+		if (data && (data.is_group || data.is_total) && column.fieldtype === "Link") {
+			column = { ...column, fieldtype: "Data" };
+		}
 		value = default_formatter(value, row, column, data);
 		if (!data) return value;
 		value = upande_accounting.budget_variance.mark_income_over_budget(value, column, data);
+		if (data.is_group || data.is_total) value = `<b>${value}</b>`;
 
 		const raw = data[column.fieldname];
+		if (column.fieldname === "utilization" && data.is_unbudgeted) {
+			return `<span style="color:var(--red-600)">${__("No Budget")}</span>`;
+		}
 		if (column.fieldname.includes("variance")) {
 			// Variance is signed so that positive is favourable, for income and expense alike.
 			if (raw < 0) value = `<span style="color:var(--red-600)">${value}</span>`;
@@ -49,12 +57,23 @@ function get_dimensional_budget_filters() {
 			reqd: 1,
 		},
 		{
+			fieldname: "filter_based_on",
+			label: __("Filter Based On"),
+			fieldtype: "Select",
+			options: [
+				{ value: "Fiscal Year", label: __("Fiscal Year") },
+				{ value: "Date Range", label: __("Date Range") },
+			],
+			default: "Fiscal Year",
+			reqd: 1,
+		},
+		{
 			fieldname: "from_fiscal_year",
 			label: __("From Fiscal Year"),
 			fieldtype: "Link",
 			options: "Fiscal Year",
 			default: erpnext.utils.get_fiscal_year(frappe.datetime.get_today()),
-			reqd: 1,
+			depends_on: "eval:doc.filter_based_on == 'Fiscal Year'",
 		},
 		{
 			fieldname: "to_fiscal_year",
@@ -62,7 +81,21 @@ function get_dimensional_budget_filters() {
 			fieldtype: "Link",
 			options: "Fiscal Year",
 			default: erpnext.utils.get_fiscal_year(frappe.datetime.get_today()),
-			reqd: 1,
+			depends_on: "eval:doc.filter_based_on == 'Fiscal Year'",
+		},
+		{
+			fieldname: "from_date",
+			label: __("From Date"),
+			fieldtype: "Date",
+			default: erpnext.utils.get_fiscal_year(frappe.datetime.get_today(), true)[1],
+			depends_on: "eval:doc.filter_based_on == 'Date Range'",
+		},
+		{
+			fieldname: "to_date",
+			label: __("To Date"),
+			fieldtype: "Date",
+			default: frappe.datetime.get_today(),
+			depends_on: "eval:doc.filter_based_on == 'Date Range'",
 		},
 		{
 			fieldname: "period",
@@ -97,6 +130,49 @@ function get_dimensional_budget_filters() {
 			fieldtype: "MultiSelectList",
 			options: "Account",
 			get_data: (txt) => company_link_options("Account", txt),
+		},
+		{
+			fieldname: "root_type",
+			label: __("Account Type"),
+			fieldtype: "Select",
+			options: [
+				{ value: "", label: "" },
+				{ value: "Income", label: __("Income") },
+				{ value: "Expense", label: __("Expense") },
+			],
+		},
+		{
+			fieldname: "group_by",
+			label: __("Group By"),
+			fieldtype: "Select",
+			options: [
+				{ value: "", label: "" },
+				{ value: "Account", label: __("Account") },
+				{ value: "Parent Account", label: __("Parent Account") },
+				{ value: "Account Type", label: __("Account Type") },
+				{ value: "Budget Against", label: __("Budget Against") },
+				{ value: "Cost Center", label: __("Cost Center") },
+				...dimensions.map((d) => ({ value: d.document_type, label: __(d.label) })),
+			],
+		},
+		{
+			fieldname: "show_budget_lines",
+			label: __("Show Budget Lines"),
+			fieldtype: "Check",
+			default: 1,
+			depends_on: "group_by",
+		},
+		{
+			fieldname: "show_unbudgeted",
+			label: __("Show Unbudgeted Expenses"),
+			fieldtype: "Check",
+			default: 0,
+		},
+		{
+			fieldname: "only_unfavourable",
+			label: __("Only Unfavourable Variances"),
+			fieldtype: "Check",
+			default: 0,
 		},
 		{
 			fieldname: "show_cumulative",

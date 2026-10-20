@@ -30,6 +30,22 @@
    "name": "Cost Center-custom_related_dimensions",
    "options": "Cost Center Related Dimension",
    "owner": "Administrator"
+  },
+  {
+   "creation": "2026-10-20 00:00:00.000000",
+   "description": "Used by Product Cost Analysis. Leave blank to inherit from the parent cost center; a top-level cost center with no value counts as Direct.",
+   "docstatus": 0,
+   "dt": "Cost Center",
+   "fieldname": "cost_type",
+   "fieldtype": "Select",
+   "insert_after": "is_group",
+   "label": "Cost Type",
+   "modified": "2026-10-20 00:00:00.000000",
+   "modified_by": "Administrator",
+   "module": "Upande Accounting Customizations",
+   "name": "Cost Center-cost_type",
+   "options": "\nDirect\nIndirect",
+   "owner": "Administrator"
   }
  ],
  "custom_perms": [],

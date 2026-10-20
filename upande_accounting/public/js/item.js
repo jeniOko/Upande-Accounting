@@ -52,3 +52,33 @@ frappe.ui.form.on("Item", {
 		}
 	},
 });
+
+// Product Cost Analysis: Cost Sources may point to Cost Center, Project or any enabled Accounting Dimension.
+frappe.ui.form.on("Item", {
+	setup(frm) {
+		frappe
+			.call("upande_accounting.product_cost_analysis.get_cost_source_dimensions")
+			.then((r) => {
+				const doctypes = (r.message || []).map((d) => d.document_type);
+				frm.set_query("accounting_dimension", "cost_dimensions", () => ({
+					filters: { name: ["in", doctypes] },
+				}));
+			});
+	},
+	track_cost_analysis(frm) {
+		if (frm.doc.track_cost_analysis) {
+			if (!frm.doc.reporting_uom) frm.set_value("reporting_uom", frm.doc.stock_uom);
+			if (!frm.doc.reporting_conversion_factor) frm.set_value("reporting_conversion_factor", 1);
+			if (!frm.doc.allocation_basis) frm.set_value("allocation_basis", "Production Qty");
+		}
+	},
+	allocation_basis(frm) {
+		if (frm.doc.allocation_basis !== "Fixed %") frm.set_value("allocation_percentage", 0);
+	},
+});
+
+frappe.ui.form.on("Cost Center Related Dimension", {
+	accounting_dimension(frm, cdt, cdn) {
+		if (frm.doctype === "Item") frappe.model.set_value(cdt, cdn, "dimension_value", null);
+	},
+});

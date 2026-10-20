@@ -40,7 +40,10 @@ doc_events = {
         "validate": "upande_accounting.cost_center_dimensions.validate_related_dimensions",
     },
     "Item": {
-        "validate": "upande_accounting.utils.validate_item_type",
+        "validate": [
+            "upande_accounting.utils.validate_item_type",
+            "upande_accounting.product_cost_analysis.validate_item",
+        ],
     },
     "Purchase Invoice": {
         "before_validate": [

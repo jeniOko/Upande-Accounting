@@ -17,14 +17,14 @@
 
 <div class="cuin-scan">
 	<h3>{{ _("Scan CU Receipt") }}</h3>
-	<p class="text-muted">{{ _("Point the camera at the QR code on the ETR / eTIMS receipt. The number is sent straight to the invoice open on your computer.") }}</p>
+	<p class="text-muted">{{ _("Hold the QR code on the receipt in front of the camera, about a hand-width away. The number is sent straight to the invoice open on your computer.") }}</p>
 
 	{% if not session %}
 	<div class="alert alert-warning">{{ _("This link is incomplete. Open a new one from the Purchase Invoice on your computer.") }}</div>
 	{% else %}
 	<div id="cuin-reader"></div>
 	<div class="cuin-status" id="cuin-status"></div>
-	<button class="btn btn-primary btn-block" id="cuin-again" style="display:none">{{ _("Scan another receipt") }}</button>
+	<button class="btn btn-primary btn-block" id="cuin-again" style="display:none">{{ _("Scan again (replaces the number)") }}</button>
 
 	<hr>
 	<p class="text-muted small">{{ _("QR code won't scan? Type the CU Invoice Number instead:") }}</p>
@@ -39,71 +39,69 @@
 {% block script %}
 {% if session %}
 <script src="/assets/frappe/node_modules/html5-qrcode/html5-qrcode.min.js"></script>
+<script src="/assets/upande_accounting/js/cuin_scan_camera.js"></script>
 <script>
 	frappe.ready(function () {
 		const session = {{ session | tojson }};
 		const $status = $("#cuin-status");
 		const $again = $("#cuin-again");
-		const reader = new Html5Qrcode("cuin-reader");
+		const reader_el = document.getElementById("cuin-reader");
+		let camera = null;
 		let busy = false;
+		let retry = null;
 
 		function set_status(message, kind) {
 			$status.html(`<div class="alert alert-${kind}">${frappe.utils.escape_html(message)}</div>`);
 		}
 
-		function send(text) {
+		function send(text, manual) {
 			if (busy) return;
 			busy = true;
-			set_status(__("Sending..."), "info");
+			set_status(__("Reading receipt..."), "info");
 			frappe.call({
 				method: "upande_accounting.cuin_scanner.submit_scan",
-				args: { session: session, scanned_text: text },
+				args: { session: session, scanned_text: text, manual: manual ? 1 : 0 },
 				callback: function (r) {
-					const cuin = r.message && r.message.cuin;
-					if (cuin) {
-						set_status(__("Sent {0}. Check your computer.", [cuin]), "success");
-					} else if (r.message && r.message.is_etims_link) {
-						set_status(__("This is an eTIMS receipt; its QR code doesn't contain the CU Invoice Number. Type the number printed on the receipt below, or on your computer."), "warning");
+					const result = r.message || {};
+					if (result.valid) {
+						set_status(__("Sent {0}. Check your computer. Scanning again will replace it.", [result.cuin]), "success");
+						$again.show();
 					} else {
-						set_status(__("Scanned, but no CU Invoice Number was recognised. The raw text was sent to your computer to check."), "warning");
+						// Invalid code: tell them and go straight back to scanning
+						set_status(
+							result.is_etims_link
+								? __("Couldn't get the CU Invoice Number from KRA for this eTIMS receipt. Scanning again... or type the number below.")
+								: __("That QR code isn't a KRA receipt code. Scanning again..."),
+							"warning"
+						);
+						retry = setTimeout(() => start(true), 1500);
 					}
-					$again.show();
 				},
 				error: function () {
 					busy = false;
-					start();
+					$again.show();
 				},
 			});
 		}
 
-		function start() {
+		function start(keep_status) {
 			busy = false;
 			$again.hide();
-			reader
-				.start(
-					{ facingMode: "environment" },
-					{ fps: 10, qrbox: 250 },
-					function (decoded_text) {
-						reader.stop().then(() => send(decoded_text));
-					},
-					function () {}
-				)
-				.catch(function (err) {
-					console.error(err);
+			if (!keep_status) $status.empty();
+			upande_cuin_camera
+				.start(reader_el, send, function () {
 					set_status(__("Could not open the camera. Allow camera access for this site (it must be opened over https), or type the number below."), "danger");
-				});
+				})
+				.then((c) => (camera = c));
 		}
 
-		$again.on("click", start);
+		$again.on("click", () => start());
 		$("#cuin-manual-send").on("click", function () {
 			const value = ($("#cuin-manual-input").val() || "").trim();
 			if (!value) return;
+			clearTimeout(retry);
 			busy = false;
-			if (reader.isScanning) {
-				reader.stop().then(() => send(value));
-			} else {
-				send(value);
-			}
+			(camera ? camera.stop() : Promise.resolve()).then(() => send(value, true));
 		});
 
 		start();

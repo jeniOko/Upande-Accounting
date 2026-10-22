@@ -55,7 +55,8 @@ function _set_withholding_queries(frm) {
 
 // Fill Control Unit Invoice Number from the QR code on a KRA ETR / eTIMS
 // receipt. Most users are on desktops, so the phone option pairs their phone
-// as a camera: it scans and the number is pushed back here over realtime.
+// as a camera: it scans and the number is pushed back here over realtime
+// (or picked up by polling where realtime isn't available).
 function _add_cuin_scan_buttons(frm) {
 	if (frm.doc.docstatus !== 0) return;
 
@@ -64,30 +65,162 @@ function _add_cuin_scan_buttons(frm) {
 	frm.add_custom_button(__("Using This Computer's Camera"), () => _scan_cuin_with_webcam(frm), group);
 }
 
-function _scan_cuin_with_webcam(frm) {
-	new frappe.ui.Scanner({
-		dialog: true,
-		multiple: false,
-		on_scan(data) {
-			frappe
-				.xcall("upande_accounting.cuin_scanner.parse_scan", { scanned_text: data.decodedText })
-				.then((result) => _apply_cuin_scan(frm, result));
+const CUIN_FIELD = "custom_control_unit_invoice_number";
+
+// Every scan replaces the field: it's cleared when scanning starts and on an
+// invalid scan, and set again by the next valid one.
+function _clear_cuin(frm) {
+	if (frm.doc[CUIN_FIELD]) frm.set_value(CUIN_FIELD, "");
+}
+
+function _set_cuin(frm, cuin) {
+	frm.set_value(CUIN_FIELD, cuin);
+	frappe.show_alert({ message: __("CU Invoice Number set to {0}", [cuin]), indicator: "green" });
+}
+
+function _invalid_scan_message(result) {
+	return result.is_etims_link
+		? __("Couldn't get the CU Invoice Number from KRA for this eTIMS receipt. Scan again, or type the number printed on the receipt.")
+		: __("That QR code isn't a KRA receipt code. Scan the QR code on the receipt again.");
+}
+
+function _type_cuin(frm) {
+	frappe.prompt(
+		{
+			fieldtype: "Data",
+			fieldname: "cuin",
+			label: __("Control Unit Invoice Number"),
+			reqd: 1,
+			description: __("Type the CU Invoice No. printed on the receipt."),
 		},
+		(values) => _set_cuin(frm, values.cuin.trim()),
+		__("Enter CU Invoice Number")
+	);
+}
+
+function _set_scan_status($el, message, indicator) {
+	$el.html(`<div class="alert alert-${indicator}" style="margin: 8px 0 0;">${frappe.utils.escape_html(message)}</div>`);
+}
+
+function _scan_cuin_with_webcam(frm) {
+	_clear_cuin(frm);
+
+	const dialog = new frappe.ui.Dialog({
+		title: __("Scan CU Receipt"),
+		fields: [{ fieldtype: "HTML", fieldname: "camera" }],
+		secondary_action_label: __("Type It In"),
+		secondary_action: () => {
+			dialog.hide();
+			_type_cuin(frm);
+		},
+	});
+	const $wrapper = dialog.fields_dict.camera.$wrapper;
+	// Closed dialogs stay in the DOM, so each reader needs its own id
+	const reader_id = `cuin-webcam-reader-${frappe.utils.get_random(8)}`;
+	$wrapper.html(`
+		<p class="text-muted">${__("Hold the QR code on the receipt up to the camera.")}</p>
+		<div id="${reader_id}" style="width: 100%;"></div>
+		<div class="cuin-scan-status"></div>
+	`);
+	const $status = $wrapper.find(".cuin-scan-status");
+
+	let camera = null;
+	dialog.onhide = () => camera && camera.stop();
+	dialog.show();
+
+	const start = () => {
+		if (!dialog.display) return;
+		upande_cuin_camera
+			.start(document.getElementById(reader_id), on_text, () =>
+				_set_scan_status(
+					$status,
+					__("Could not open the camera. Allow camera access for this site, or use your phone instead."),
+					"danger"
+				)
+			)
+			.then((c) => {
+				camera = c;
+				if (!dialog.display) camera.stop();
+			});
+	};
+
+	const on_text = (text) => {
+		_set_scan_status($status, __("Reading receipt..."), "info");
+		frappe.xcall("upande_accounting.cuin_scanner.parse_scan", { scanned_text: text }).then((result) => {
+			if (result.valid) {
+				dialog.hide();
+				_set_cuin(frm, result.cuin);
+			} else {
+				_set_scan_status($status, _invalid_scan_message(result), "warning");
+				setTimeout(start, 1500);
+			}
+		});
+	};
+
+	frappe
+		.require([
+			"/assets/frappe/node_modules/html5-qrcode/html5-qrcode.min.js",
+			"/assets/upande_accounting/js/cuin_scan_camera.js",
+		])
+		.then(start);
+}
+
+function _get_phone_scan_session(frm) {
+	// Reuse the phone link while it's still valid so a rescan doesn't need re-pairing
+	const cached = frm.__cuin_phone_session;
+	if (cached && cached.expires_at > Date.now() + 60 * 1000) return Promise.resolve(cached);
+
+	return frappe.xcall("upande_accounting.cuin_scanner.create_scan_session").then((s) => {
+		s.expires_at = Date.now() + 14 * 60 * 1000;
+		frm.__cuin_phone_session = s;
+		return s;
 	});
 }
 
 function _scan_cuin_with_phone(frm) {
-	frappe.xcall("upande_accounting.cuin_scanner.create_scan_session").then((s) => {
+	_clear_cuin(frm);
+
+	_get_phone_scan_session(frm).then((s) => {
+		const seen = new Set();
 		const handler = (data) => {
-			if (!data || data.session !== s.session) return;
-			dialog.hide();
-			_apply_cuin_scan(frm, data);
+			if (!data || data.session !== s.session || seen.has(data.scan_id)) return;
+			seen.add(data.scan_id);
+
+			if (data.valid) {
+				_set_cuin(frm, data.cuin);
+				_set_scan_status(
+					$status,
+					__("CU Invoice Number set to {0}. Scanning another receipt on your phone will replace it.", [data.cuin]),
+					"success"
+				);
+			} else {
+				_clear_cuin(frm);
+				_set_scan_status($status, _invalid_scan_message(data), "warning");
+			}
 		};
+
+		// Realtime is the fast path; polling covers sites where socket.io isn't reachable
+		const poll = setInterval(() => {
+			frappe
+				.xcall("upande_accounting.cuin_scanner.get_scan_result", { session: s.session })
+				.then((data) => data && handler(data))
+				.catch(() => {});
+		}, 2000);
 
 		const dialog = new frappe.ui.Dialog({
 			title: __("Scan CU Receipt with Your Phone"),
 			fields: [{ fieldtype: "HTML", fieldname: "qr" }],
-			on_hide: () => frappe.realtime.off(s.event, handler),
+			primary_action_label: __("Done"),
+			primary_action: () => dialog.hide(),
+			secondary_action_label: __("Type It In"),
+			secondary_action: () => {
+				dialog.hide();
+				_type_cuin(frm);
+			},
+			on_hide: () => {
+				clearInterval(poll);
+				frappe.realtime.off(s.event, handler);
+			},
 		});
 
 		dialog.fields_dict.qr.$wrapper.html(`
@@ -95,35 +228,14 @@ function _scan_cuin_with_phone(frm) {
 				<p>${__("Scan this code with your phone's camera, log in as yourself if asked, then scan the receipt's QR code.")}</p>
 				<img src="data:image/svg+xml;base64,${s.qr_svg}" style="width: 220px; height: 220px;">
 				<p class="small text-muted" style="word-break: break-all;">${frappe.utils.escape_html(s.url)}</p>
-				<p class="text-muted">${__("Waiting for scan... This link expires in 15 minutes.")}</p>
+				<p class="text-muted">${__("Already have the scan page open on your phone? Just scan the receipt.")}</p>
+				<div class="cuin-scan-status"></div>
 			</div>
 		`);
+		const $status = dialog.fields_dict.qr.$wrapper.find(".cuin-scan-status");
+		_set_scan_status($status, __("Waiting for a scan..."), "info");
 
 		frappe.realtime.on(s.event, handler);
 		dialog.show();
 	});
-}
-
-function _apply_cuin_scan(frm, result) {
-	if (result.cuin) {
-		frm.set_value("custom_control_unit_invoice_number", result.cuin);
-		frappe.show_alert({ message: __("CU Invoice Number set to {0}", [result.cuin]), indicator: "green" });
-		return;
-	}
-
-	// Unrecognised QR content: let the user type or pick the number out of it
-	frappe.prompt(
-		{
-			fieldtype: "Data",
-			fieldname: "cuin",
-			label: __("Control Unit Invoice Number"),
-			default: result.is_etims_link ? "" : result.raw,
-			reqd: 1,
-			description: result.is_etims_link
-				? __("This is an eTIMS receipt. Its QR code only holds a KRA verification link, so type the CU Invoice No. printed on the receipt.")
-				: __("The QR code didn't contain a recognisable CU Invoice Number. Edit the scanned text below."),
-		},
-		(values) => frm.set_value("custom_control_unit_invoice_number", values.cuin.trim()),
-		__("Check Scanned Value")
-	);
 }

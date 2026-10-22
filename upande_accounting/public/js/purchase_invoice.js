@@ -18,6 +18,10 @@ frappe.ui.form.on("Purchase Invoice", {
 		const count = parseInt(frm.doc.custom_withholding_count) || 0;
 		if (count < 2) frm.set_value("custom_withholding_3", "");
 	},
+
+	custom_control_unit_invoice_number: function (frm) {
+		_parse_typed_cuin(frm);
+	},
 });
 
 // The manual withholding override (Ignore Withholding Treatment / Apply /
@@ -82,6 +86,32 @@ function _invalid_scan_message(result) {
 	return result.is_etims_link
 		? __("Couldn't get the CU Invoice Number from KRA for this eTIMS receipt. Scan again, or type the number printed on the receipt.")
 		: __("That QR code isn't a KRA receipt code. Scan the QR code on the receipt again.");
+}
+
+// A handheld USB / Bluetooth scanner types the QR code's full content (the
+// KRA link) into the field, as does pasting it. Swap that for the CU invoice
+// number; a number typed by hand is left exactly as entered.
+function _parse_typed_cuin(frm) {
+	const raw = (frm.doc[CUIN_FIELD] || "").trim();
+	if (!raw || !(raw.includes("://") || /\s/.test(raw))) return;
+
+	frappe.call({
+		method: "upande_accounting.cuin_scanner.parse_scan",
+		args: { scanned_text: raw },
+		freeze: true,
+		freeze_message: __("Reading CU Invoice Number..."),
+		callback: (r) => {
+			// Ignore if the field was changed again while this was in flight
+			if ((frm.doc[CUIN_FIELD] || "").trim() !== raw) return;
+			const result = r.message || {};
+			if (result.valid) {
+				_set_cuin(frm, result.cuin);
+			} else {
+				frm.set_value(CUIN_FIELD, "");
+				frappe.show_alert({ message: _invalid_scan_message(result), indicator: "orange" }, 8);
+			}
+		},
+	});
 }
 
 function _type_cuin(frm) {

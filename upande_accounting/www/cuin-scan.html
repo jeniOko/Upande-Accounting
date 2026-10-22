@@ -1,0 +1,113 @@
+{% extends "templates/web.html" %}
+
+{% block navbar %}{% endblock %}
+{% block footer %}{% endblock %}
+
+{% block title %}{{ _("Scan CU Receipt") }}{% endblock %}
+
+{% block page_content %}
+<style>
+	.cuin-scan { max-width: 480px; margin: 0 auto; padding: 16px; }
+	.cuin-scan h3 { margin-bottom: 4px; }
+	.cuin-scan #cuin-reader { width: 100%; margin: 16px 0; border-radius: 8px; overflow: hidden; }
+	.cuin-scan .cuin-status { min-height: 1.5em; margin: 12px 0; }
+	.cuin-scan .cuin-manual { display: flex; gap: 8px; }
+	.cuin-scan .cuin-manual input { flex: 1; }
+</style>
+
+<div class="cuin-scan">
+	<h3>{{ _("Scan CU Receipt") }}</h3>
+	<p class="text-muted">{{ _("Point the camera at the QR code on the ETR / eTIMS receipt. The number is sent straight to the invoice open on your computer.") }}</p>
+
+	{% if not session %}
+	<div class="alert alert-warning">{{ _("This link is incomplete. Open a new one from the Purchase Invoice on your computer.") }}</div>
+	{% else %}
+	<div id="cuin-reader"></div>
+	<div class="cuin-status" id="cuin-status"></div>
+	<button class="btn btn-primary btn-block" id="cuin-again" style="display:none">{{ _("Scan another receipt") }}</button>
+
+	<hr>
+	<p class="text-muted small">{{ _("QR code won't scan? Type the CU Invoice Number instead:") }}</p>
+	<div class="cuin-manual">
+		<input class="form-control" id="cuin-manual-input" autocomplete="off">
+		<button class="btn btn-default" id="cuin-manual-send">{{ _("Send") }}</button>
+	</div>
+	{% endif %}
+</div>
+{% endblock %}
+
+{% block script %}
+{% if session %}
+<script src="/assets/frappe/node_modules/html5-qrcode/html5-qrcode.min.js"></script>
+<script>
+	frappe.ready(function () {
+		const session = {{ session | tojson }};
+		const $status = $("#cuin-status");
+		const $again = $("#cuin-again");
+		const reader = new Html5Qrcode("cuin-reader");
+		let busy = false;
+
+		function set_status(message, kind) {
+			$status.html(`<div class="alert alert-${kind}">${frappe.utils.escape_html(message)}</div>`);
+		}
+
+		function send(text) {
+			if (busy) return;
+			busy = true;
+			set_status(__("Sending..."), "info");
+			frappe.call({
+				method: "upande_accounting.cuin_scanner.submit_scan",
+				args: { session: session, scanned_text: text },
+				callback: function (r) {
+					const cuin = r.message && r.message.cuin;
+					if (cuin) {
+						set_status(__("Sent {0}. Check your computer.", [cuin]), "success");
+					} else if (r.message && r.message.is_etims_link) {
+						set_status(__("This is an eTIMS receipt; its QR code doesn't contain the CU Invoice Number. Type the number printed on the receipt below, or on your computer."), "warning");
+					} else {
+						set_status(__("Scanned, but no CU Invoice Number was recognised. The raw text was sent to your computer to check."), "warning");
+					}
+					$again.show();
+				},
+				error: function () {
+					busy = false;
+					start();
+				},
+			});
+		}
+
+		function start() {
+			busy = false;
+			$again.hide();
+			reader
+				.start(
+					{ facingMode: "environment" },
+					{ fps: 10, qrbox: 250 },
+					function (decoded_text) {
+						reader.stop().then(() => send(decoded_text));
+					},
+					function () {}
+				)
+				.catch(function (err) {
+					console.error(err);
+					set_status(__("Could not open the camera. Allow camera access for this site (it must be opened over https), or type the number below."), "danger");
+				});
+		}
+
+		$again.on("click", start);
+		$("#cuin-manual-send").on("click", function () {
+			const value = ($("#cuin-manual-input").val() || "").trim();
+			if (!value) return;
+			busy = false;
+			if (reader.isScanning) {
+				reader.stop().then(() => send(value));
+			} else {
+				send(value);
+			}
+		});
+
+		start();
+	});
+</script>
+{% endif %}
+{% endblock %}

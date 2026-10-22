@@ -118,7 +118,7 @@ function _scan_cuin_with_webcam(frm) {
 	// Closed dialogs stay in the DOM, so each reader needs its own id
 	const reader_id = `cuin-webcam-reader-${frappe.utils.get_random(8)}`;
 	$wrapper.html(`
-		<p class="text-muted">${__("Hold the QR code on the receipt up to the camera.")}</p>
+		<p class="text-muted">${__("Hold the receipt's QR code inside the square, close enough to fill it but still sharp.")}</p>
 		<div id="${reader_id}" style="width: 100%;"></div>
 		<div class="cuin-scan-status"></div>
 	`);
@@ -159,7 +159,7 @@ function _scan_cuin_with_webcam(frm) {
 
 	frappe
 		.require([
-			"/assets/frappe/node_modules/html5-qrcode/html5-qrcode.min.js",
+			"/assets/upande_accounting/js/lib/zxing-wasm/zxing_reader.iife.js",
 			"/assets/upande_accounting/js/cuin_scan_camera.js",
 		])
 		.then(start);

@@ -17,7 +17,7 @@
 
 <div class="cuin-scan">
 	<h3>{{ _("Scan CU Receipt") }}</h3>
-	<p class="text-muted">{{ _("Hold the QR code on the receipt in front of the camera, about a hand-width away. The number is sent straight to the invoice open on your computer.") }}</p>
+	<p class="text-muted">{{ _("Put the receipt's QR code inside the square. Hold the phone about 15-20 cm away so it's sharp; tilt is fine. The number is sent straight to the invoice open on your computer.") }}</p>
 
 	{% if not session %}
 	<div class="alert alert-warning">{{ _("This link is incomplete. Open a new one from the Purchase Invoice on your computer.") }}</div>
@@ -38,7 +38,7 @@
 
 {% block script %}
 {% if session %}
-<script src="/assets/frappe/node_modules/html5-qrcode/html5-qrcode.min.js"></script>
+<script src="/assets/upande_accounting/js/lib/zxing-wasm/zxing_reader.iife.js"></script>
 <script src="/assets/upande_accounting/js/cuin_scan_camera.js"></script>
 <script>
 	frappe.ready(function () {

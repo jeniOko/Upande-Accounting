@@ -1,0 +1,25 @@
+{
+ "custom_fields": [
+  {
+   "creation": "2026-10-23 00:00:00",
+   "default": "1",
+   "description": "Show the Scan CU Receipt button on Purchase Invoices and read KRA receipt QR codes scanned with a phone, webcam or handheld scanner into the Control Unit Invoice Number.",
+   "docstatus": 0,
+   "dt": "Accounts Settings",
+   "fieldname": "custom_enable_cu_invoice_scanning",
+   "fieldtype": "Check",
+   "insert_after": "confirm_before_resetting_posting_date",
+   "label": "Enable CU Invoice Number Scanning",
+   "modified": "2026-10-23 00:00:00",
+   "modified_by": "Administrator",
+   "module": "Upande Accounting Customizations",
+   "name": "Accounts Settings-custom_enable_cu_invoice_scanning",
+   "owner": "Administrator"
+  }
+ ],
+ "custom_perms": [],
+ "doctype": "Accounts Settings",
+ "links": [],
+ "property_setters": [],
+ "sync_on_migrate": 1
+}

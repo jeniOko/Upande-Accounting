@@ -62,14 +62,43 @@ function _set_withholding_queries(frm) {
 // as a camera: it scans and the number is pushed back here over realtime
 // (or picked up by polling where realtime isn't available).
 function _add_cuin_scan_buttons(frm) {
-	if (frm.doc.docstatus !== 0) return;
+	if (frm.doc.docstatus !== 0 || !_cuin_scanning_enabled()) return;
 
 	const group = __("Scan CU Receipt");
 	frm.add_custom_button(__("Using My Phone"), () => _scan_cuin_with_phone(frm), group);
 	frm.add_custom_button(__("Using This Computer's Camera"), () => _scan_cuin_with_webcam(frm), group);
+	_style_cuin_scan_button(frm, group);
 }
 
 const CUIN_FIELD = "custom_control_unit_invoice_number";
+
+// Switched in Accounts Settings > Invoice and Billing; on unless turned off
+function _cuin_scanning_enabled() {
+	return cint(frappe.boot.upande_cuin_scanning_enabled ?? 1) === 1;
+}
+
+// Blue highlight that reads the same in light and dark mode
+function _style_cuin_scan_button(frm, group) {
+	if (!document.getElementById("upande-cuin-scan-style")) {
+		$(`<style id="upande-cuin-scan-style">
+			.btn.upande-cuin-scan-btn,
+			.btn.upande-cuin-scan-btn:focus {
+				background-color: var(--blue-600);
+				border-color: var(--blue-600);
+				color: #fff;
+				--icon-stroke: #fff;
+			}
+			.btn.upande-cuin-scan-btn:hover,
+			.btn.upande-cuin-scan-btn:active,
+			.show > .btn.upande-cuin-scan-btn {
+				background-color: var(--blue-700);
+				border-color: var(--blue-700);
+				color: #fff;
+			}
+		</style>`).appendTo("head");
+	}
+	frm.page.get_inner_group_button(group).find("> button").removeClass("btn-default").addClass("upande-cuin-scan-btn");
+}
 
 // Every scan replaces the field: it's cleared when scanning starts and on an
 // invalid scan, and set again by the next valid one.
@@ -93,7 +122,7 @@ function _invalid_scan_message(result) {
 // number; a number typed by hand is left exactly as entered.
 function _parse_typed_cuin(frm) {
 	const raw = (frm.doc[CUIN_FIELD] || "").trim();
-	if (!raw || !(raw.includes("://") || /\s/.test(raw))) return;
+	if (!_cuin_scanning_enabled() || !raw || !(raw.includes("://") || /\s/.test(raw))) return;
 
 	frappe.call({
 		method: "upande_accounting.cuin_scanner.parse_scan",
@@ -145,36 +174,23 @@ function _scan_cuin_with_webcam(frm) {
 		},
 	});
 	const $wrapper = dialog.fields_dict.camera.$wrapper;
-	// Closed dialogs stay in the DOM, so each reader needs its own id
-	const reader_id = `cuin-webcam-reader-${frappe.utils.get_random(8)}`;
 	$wrapper.html(`
 		<p class="text-muted">${__("Hold the receipt's QR code inside the square, close enough to fill it but still sharp.")}</p>
-		<div id="${reader_id}" style="width: 100%;"></div>
+		<div class="cuin-webcam-reader"></div>
+		<div style="margin-top: 8px;">
+			<button type="button" class="btn btn-default btn-sm cuin-upload-photo">${__("Upload Photo of Receipt")}</button>
+			<input type="file" accept="image/*" class="cuin-photo-input" style="display: none;">
+		</div>
 		<div class="cuin-scan-status"></div>
 	`);
 	const $status = $wrapper.find(".cuin-scan-status");
 
-	let camera = null;
-	dialog.onhide = () => camera && camera.stop();
+	let scanner = null;
+	dialog.onhide = () => scanner && scanner.stop();
 	dialog.show();
 
-	const start = () => {
-		if (!dialog.display) return;
-		upande_cuin_camera
-			.start(document.getElementById(reader_id), on_text, () =>
-				_set_scan_status(
-					$status,
-					__("Could not open the camera. Allow camera access for this site, or use your phone instead."),
-					"danger"
-				)
-			)
-			.then((c) => {
-				camera = c;
-				if (!dialog.display) camera.stop();
-			});
-	};
-
-	const on_text = (text) => {
+	const handle_text = (text) => {
+		scanner && scanner.pause();
 		_set_scan_status($status, __("Reading receipt..."), "info");
 		frappe.xcall("upande_accounting.cuin_scanner.parse_scan", { scanned_text: text }).then((result) => {
 			if (result.valid) {
@@ -182,17 +198,49 @@ function _scan_cuin_with_webcam(frm) {
 				_set_cuin(frm, result.cuin);
 			} else {
 				_set_scan_status($status, _invalid_scan_message(result), "warning");
-				setTimeout(start, 1500);
+				setTimeout(() => scanner && scanner.resume(), 1500);
 			}
 		});
 	};
+
+	$wrapper.find(".cuin-upload-photo").on("click", () => $wrapper.find(".cuin-photo-input").val("").trigger("click"));
+	$wrapper.find(".cuin-photo-input").on("change", function () {
+		const file = this.files && this.files[0];
+		if (!file) return;
+		scanner && scanner.pause();
+		_set_scan_status($status, __("Reading photo..."), "info");
+		upande_cuin_camera.decode_file(file).then((text) => {
+			if (text) {
+				handle_text(text);
+			} else {
+				_set_scan_status($status, __("No QR code found in the photo. Try a closer, sharper photo."), "warning");
+				scanner && scanner.resume();
+			}
+		});
+	});
 
 	frappe
 		.require([
 			"/assets/upande_accounting/js/lib/zxing-wasm/zxing_reader.iife.js",
 			"/assets/upande_accounting/js/cuin_scan_camera.js",
 		])
-		.then(start);
+		.then(() => {
+			if (!dialog.display) return;
+			return upande_cuin_camera.open($wrapper.find(".cuin-webcam-reader")[0], {
+				aspect: "4 / 3",
+				on_text: handle_text,
+				on_error: () =>
+					_set_scan_status(
+						$status,
+						__("Could not open the camera. Allow camera access for this site, upload a photo, or use your phone instead."),
+						"danger"
+					),
+			});
+		})
+		.then((s) => {
+			scanner = s;
+			if (scanner && !dialog.display) scanner.stop();
+		});
 }
 
 function _get_phone_scan_session(frm) {

@@ -9,6 +9,8 @@ Two ways in:
 
 TIMS receipts carry the CU invoice number in the QR link itself. eTIMS receipts
 only carry a KRA verification link, so the number is read off that KRA page.
+
+The whole feature can be switched off in Accounts Settings (Invoice and Billing).
 """
 
 import re
@@ -31,6 +33,26 @@ _INVOICE_PARAMS = ("invoiceno", "invoice_no", "cuin", "cuinvoiceno", "cu_invoice
 # Only KRA's own eTIMS hosts are ever fetched, never an arbitrary scanned URL
 _ETIMS_HOSTS = ("etims.kra.go.ke", "etims-sbx.kra.go.ke")
 _ETIMS_LOOKUP_TIMEOUT = 10
+SETTING_FIELD = "custom_enable_cu_invoice_scanning"
+
+
+def is_scanning_enabled():
+	# Never saved counts as enabled, matching the field's default. Read the raw
+	# Singles row: get_single_value casts a missing Check to 0.
+	value = frappe.db.sql(
+		"select value from `tabSingles` where doctype = 'Accounts Settings' and field = %s",
+		SETTING_FIELD,
+	)
+	return not value or bool(frappe.utils.cint(value[0][0]))
+
+
+def _check_enabled():
+	if not is_scanning_enabled():
+		frappe.throw(_("CU Invoice Number scanning is turned off in Accounts Settings."))
+
+
+def boot_session(bootinfo):
+	bootinfo.upande_cuin_scanning_enabled = int(is_scanning_enabled())
 
 
 def _cache_key(session):
@@ -96,6 +118,7 @@ def lookup_etims_cuin(url):
 def parse_scan(scanned_text, manual=0):
 	"""`valid` is False when the QR isn't a KRA receipt code (or KRA couldn't be
 	reached for an eTIMS one), so the scanner should try again."""
+	_check_enabled()
 	etims = is_etims_link(scanned_text)
 	if frappe.utils.cint(manual):
 		# Typed by the user from the printed receipt: trust it as entered
@@ -115,6 +138,7 @@ def parse_scan(scanned_text, manual=0):
 
 @frappe.whitelist()
 def create_scan_session():
+	_check_enabled()
 	session = frappe.generate_hash(length=20)
 	frappe.cache.set_value(_cache_key(session), frappe.session.user, expires_in_sec=SESSION_TTL)
 
@@ -129,6 +153,7 @@ def create_scan_session():
 
 @frappe.whitelist()
 def submit_scan(session, scanned_text, manual=0):
+	_check_enabled()
 	owner = frappe.cache.get_value(_cache_key(session))
 	if not owner:
 		frappe.throw(_("This scan link has expired. Open a new one from the invoice."))

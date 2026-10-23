@@ -9,22 +9,31 @@
 <style>
 	.cuin-scan { max-width: 480px; margin: 0 auto; padding: 16px; }
 	.cuin-scan h3 { margin-bottom: 4px; }
-	.cuin-scan #cuin-reader { width: 100%; margin: 16px 0; border-radius: 8px; overflow: hidden; }
+	.cuin-scan #cuin-reader { margin-top: 12px; }
 	.cuin-scan .cuin-status { min-height: 1.5em; margin: 12px 0; }
+	.cuin-scan .cuin-actions { display: flex; gap: 8px; margin-top: 12px; }
+	.cuin-scan .cuin-actions .btn { flex: 1; }
 	.cuin-scan .cuin-manual { display: flex; gap: 8px; }
 	.cuin-scan .cuin-manual input { flex: 1; }
 </style>
 
 <div class="cuin-scan">
 	<h3>{{ _("Scan CU Receipt") }}</h3>
-	<p class="text-muted">{{ _("Put the receipt's QR code inside the square. Hold the phone about 15-20 cm away so it's sharp; tilt is fine. The number is sent straight to the invoice open on your computer.") }}</p>
 
-	{% if not session %}
+	{% if not enabled %}
+	<div class="alert alert-warning">{{ _("CU Invoice Number scanning is turned off in Accounts Settings.") }}</div>
+	{% elif not session %}
 	<div class="alert alert-warning">{{ _("This link is incomplete. Open a new one from the Purchase Invoice on your computer.") }}</div>
 	{% else %}
+	<p class="text-muted">{{ _("Put the receipt's QR code inside the square, about 15-20 cm away; tilt is fine. Tap the picture to refocus. For very small or faint codes, use Take Photo.") }}</p>
+
 	<div id="cuin-reader"></div>
+	<div class="cuin-actions">
+		<button class="btn btn-default" id="cuin-photo">{{ _("Take Photo") }}</button>
+		<button class="btn btn-primary" id="cuin-again" style="display:none">{{ _("Scan Again") }}</button>
+	</div>
+	<input type="file" accept="image/*" capture="environment" id="cuin-photo-input" style="display:none">
 	<div class="cuin-status" id="cuin-status"></div>
-	<button class="btn btn-primary btn-block" id="cuin-again" style="display:none">{{ _("Scan again (replaces the number)") }}</button>
 
 	<hr>
 	<p class="text-muted small">{{ _("QR code won't scan? Type the CU Invoice Number instead:") }}</p>
@@ -37,7 +46,7 @@
 {% endblock %}
 
 {% block script %}
-{% if session %}
+{% if enabled and session %}
 <script src="/assets/upande_accounting/js/lib/zxing-wasm/zxing_reader.iife.js"></script>
 <script src="/assets/upande_accounting/js/cuin_scan_camera.js"></script>
 <script>
@@ -45,8 +54,7 @@
 		const session = {{ session | tojson }};
 		const $status = $("#cuin-status");
 		const $again = $("#cuin-again");
-		const reader_el = document.getElementById("cuin-reader");
-		let camera = null;
+		let scanner = null;
 		let busy = false;
 		let retry = null;
 
@@ -54,9 +62,18 @@
 			$status.html(`<div class="alert alert-${kind}">${frappe.utils.escape_html(message)}</div>`);
 		}
 
+		function resume() {
+			clearTimeout(retry);
+			busy = false;
+			$again.hide();
+			scanner && scanner.resume();
+		}
+
+		// The camera stays open the whole time; it is only paused while a scan is handled
 		function send(text, manual) {
 			if (busy) return;
 			busy = true;
+			scanner && scanner.pause();
 			set_status(__("Reading receipt..."), "info");
 			frappe.call({
 				method: "upande_accounting.cuin_scanner.submit_scan",
@@ -65,16 +82,17 @@
 					const result = r.message || {};
 					if (result.valid) {
 						set_status(__("Sent {0}. Check your computer. Scanning again will replace it.", [result.cuin]), "success");
+						busy = false;
 						$again.show();
 					} else {
-						// Invalid code: tell them and go straight back to scanning
+						// Invalid code: say so and go straight back to scanning
 						set_status(
 							result.is_etims_link
 								? __("Couldn't get the CU Invoice Number from KRA for this eTIMS receipt. Scanning again... or type the number below.")
 								: __("That QR code isn't a KRA receipt code. Scanning again..."),
 							"warning"
 						);
-						retry = setTimeout(() => start(true), 1500);
+						retry = setTimeout(resume, 1500);
 					}
 				},
 				error: function () {
@@ -84,27 +102,44 @@
 			});
 		}
 
-		function start(keep_status) {
-			busy = false;
-			$again.hide();
-			if (!keep_status) $status.empty();
-			upande_cuin_camera
-				.start(reader_el, send, function () {
-					set_status(__("Could not open the camera. Allow camera access for this site (it must be opened over https), or type the number below."), "danger");
-				})
-				.then((c) => (camera = c));
-		}
+		upande_cuin_camera
+			.open(document.getElementById("cuin-reader"), {
+				on_text: (text) => send(text),
+				on_error: () =>
+					set_status(__("Could not open the camera. Allow camera access for this site (it must be opened over https), or use Take Photo."), "danger"),
+			})
+			.then((s) => (scanner = s));
 
-		$again.on("click", () => start());
+		$again.on("click", () => {
+			$status.empty();
+			resume();
+		});
+
+		$("#cuin-photo").on("click", () => $("#cuin-photo-input").val("").trigger("click"));
+		$("#cuin-photo-input").on("change", function () {
+			const file = this.files && this.files[0];
+			if (!file) return;
+			clearTimeout(retry);
+			scanner && scanner.pause();
+			set_status(__("Reading photo..."), "info");
+			upande_cuin_camera.decode_file(file).then((text) => {
+				if (text) {
+					busy = false;
+					send(text);
+				} else {
+					set_status(__("No QR code found in the photo. Take it again a little closer, making sure the code is sharp."), "warning");
+					$again.show();
+				}
+			});
+		});
+
 		$("#cuin-manual-send").on("click", function () {
 			const value = ($("#cuin-manual-input").val() || "").trim();
 			if (!value) return;
 			clearTimeout(retry);
 			busy = false;
-			(camera ? camera.stop() : Promise.resolve()).then(() => send(value, true));
+			send(value, true);
 		});
-
-		start();
 	});
 </script>
 {% endif %}

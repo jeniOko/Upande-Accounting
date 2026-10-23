@@ -2,6 +2,8 @@ from urllib.parse import quote
 
 import frappe
 
+from upande_accounting.cuin_scanner import is_scanning_enabled
+
 no_cache = 1
 
 
@@ -11,4 +13,5 @@ def get_context(context):
 		raise frappe.Redirect
 
 	context.session = frappe.form_dict.get("session") or ""
+	context.enabled = is_scanning_enabled()
 	context.no_header = 1

@@ -108,6 +108,8 @@ doc_events = {
 # page_js = {"page" : "public/js/file.js"}
 
 # include js in doctype views
+extend_bootinfo = "upande_accounting.cuin_scanner.boot_session"
+
 doctype_js = {
     "Cost Center": "public/js/cost_center.js",
     "Item": "public/js/item.js",

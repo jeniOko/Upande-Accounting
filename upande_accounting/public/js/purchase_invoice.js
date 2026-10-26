@@ -83,27 +83,96 @@ function _add_cuin_scan_buttons(frm) {
 }
 
 // Blue highlight that reads the same in light and dark mode. Targeted by the
-// group's data-label (not a class) so it survives the toolbar being re-rendered.
+// group's data-label (not a class) so it survives the toolbar being re-rendered;
+// hex fallbacks keep it blue under themes without Frappe's colour variables.
 function _style_cuin_scan_button(group) {
 	if (document.getElementById("upande-cuin-scan-style")) return;
-	const button = `.inner-group-button[data-label="${encodeURIComponent(group)}"] > .btn`;
+	const wrapper = `.inner-group-button[data-label="${encodeURIComponent(group)}"]`;
 	$(`<style id="upande-cuin-scan-style">
-		${button},
-		${button}:focus {
-			background-color: var(--blue-600) !important;
-			border-color: var(--blue-600) !important;
+		${wrapper} > .btn,
+		${wrapper} > .btn:focus {
+			background-color: var(--blue-600, #007be0) !important;
+			border-color: var(--blue-600, #007be0) !important;
 			color: #fff !important;
 			--icon-stroke: #fff;
 		}
-		${button}:hover,
-		${button}:active,
-		.inner-group-button.show > .btn,
-		${button}[aria-expanded="true"] {
-			background-color: var(--blue-700) !important;
-			border-color: var(--blue-700) !important;
+		${wrapper} > .btn:hover,
+		${wrapper} > .btn:active,
+		${wrapper}.show > .btn,
+		${wrapper} > .btn[aria-expanded="true"] {
+			background-color: var(--blue-700, #0070cc) !important;
+			border-color: var(--blue-700, #0070cc) !important;
 			color: #fff !important;
 		}
+
+		/* Success highlight on the Control Unit Invoice Number after a scan */
+		.frappe-control.upande-cuin-success {
+			border-radius: 10px;
+			animation: upande-cuin-pulse 0.9s ease-out 3, upande-cuin-tint 4s ease-out 1 forwards;
+		}
+		.frappe-control.upande-cuin-success input {
+			border: 2px solid #22a06b !important;
+			font-weight: 600;
+			transition: border-color 0.3s;
+		}
+		.upande-cuin-badge {
+			display: inline-flex;
+			align-items: center;
+			gap: 4px;
+			margin-left: 8px;
+			padding: 1px 8px;
+			border-radius: 999px;
+			background: #22a06b;
+			color: #fff;
+			font-size: 11px;
+			font-weight: 600;
+			vertical-align: middle;
+			animation: upande-cuin-badge-in 0.35s ease-out;
+		}
+		@keyframes upande-cuin-pulse {
+			0% { box-shadow: 0 0 0 0 rgba(34, 160, 107, 0.65); }
+			100% { box-shadow: 0 0 0 14px rgba(34, 160, 107, 0); }
+		}
+		@keyframes upande-cuin-tint {
+			0%, 50% { background-color: rgba(34, 160, 107, 0.18); }
+			100% { background-color: transparent; }
+		}
+		@keyframes upande-cuin-badge-in {
+			from { transform: scale(0.6); opacity: 0; }
+			to { transform: scale(1); opacity: 1; }
+		}
+		@media (prefers-reduced-motion: reduce) {
+			.frappe-control.upande-cuin-success { animation: upande-cuin-tint 4s ease-out 1 forwards; }
+			.upande-cuin-badge { animation: none; }
+		}
 	</style>`).appendTo("head");
+}
+
+// Scroll to the Control Unit Invoice Number (switching tab / opening its
+// section if needed) and make the filled-in value impossible to miss
+function _highlight_cuin_field(frm) {
+	const field = frm.get_field(CUIN_FIELD);
+	if (!field || !field.$wrapper) return;
+	frm.scroll_to_field(CUIN_FIELD, false);
+
+	const $control = field.$wrapper.closest(".frappe-control");
+	clearTimeout(frm.__cuin_highlight_timer);
+	$control.find(".upande-cuin-badge").remove();
+	// Restart the animation even if it is still running from a previous scan
+	$control.removeClass("upande-cuin-success");
+	void $control[0].offsetWidth;
+	$control.addClass("upande-cuin-success");
+	$control
+		.find(".control-label, label")
+		.first()
+		.append(`<span class="upande-cuin-badge">&#10003; ${__("Scanned")}</span>`);
+
+	frm.__cuin_highlight_timer = setTimeout(() => {
+		$control.removeClass("upande-cuin-success");
+		$control.find(".upande-cuin-badge").fadeOut(400, function () {
+			$(this).remove();
+		});
+	}, 6000);
 }
 
 // Loads zxing and the camera module at their versioned URLs (production nginx
@@ -163,7 +232,7 @@ function _clear_cuin(frm) {
 }
 
 function _set_cuin(frm, cuin) {
-	frm.set_value(CUIN_FIELD, cuin);
+	frm.set_value(CUIN_FIELD, cuin).then(() => _highlight_cuin_field(frm));
 	frappe.show_alert({ message: __("CU Invoice Number set to {0}", [cuin]), indicator: "green" });
 }
 
@@ -327,11 +396,13 @@ function _scan_cuin_with_phone(frm) {
 
 	frappe.xcall("upande_accounting.cuin_scanner.create_scan_session").then((s) => {
 		const seen = new Set();
+		let scanned = false;
 		const handler = (data) => {
 			if (!data || data.session !== s.session || seen.has(data.scan_id)) return;
 			seen.add(data.scan_id);
 
 			if (data.valid) {
+				scanned = true;
 				_set_cuin(frm, data.cuin);
 				_set_scan_status(
 					$status,
@@ -366,6 +437,8 @@ function _scan_cuin_with_phone(frm) {
 				clearInterval(poll);
 				frappe.realtime.off(s.event, handler);
 				_destroy_dialog_after_hide(dialog);
+				// The highlight ran behind the dialog; show it again now it's gone
+				if (scanned && frm.doc[CUIN_FIELD]) setTimeout(() => _highlight_cuin_field(frm), 300);
 			},
 		});
 

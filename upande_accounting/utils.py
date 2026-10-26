@@ -99,6 +99,13 @@ def normalize_withholding_categories_on_items(doc, _method=None):
         if item.get("apply_tds"):
             continue
 
+        # Already moved to an additional slot on an earlier save — core has
+        # re-filled the native slot from the item/supplier default since, so
+        # just clear it again rather than duplicating it into another slot.
+        if std_cat in (item.get(f) for f in additional_fields):
+            item.tax_withholding_category = ""
+            continue
+
         swapped = False
         for f in additional_fields:
             val = item.get(f)
@@ -198,7 +205,12 @@ def sync_additional_withholding_categories_to_items(doc, _method=None):
             # re-validate whatever the item already has instead of wiping it.
             cat = doc.get(slot) or "" if count >= slot_num else item.get(slot)
 
-            if not cat or cat == item.get("tax_withholding_category") or _is_category_ignored_on_item(item, cat):
+            if (
+                not cat
+                or cat == item.get("tax_withholding_category")
+                or (slot_num == 2 and cat == item.get("custom_withholding_2"))
+                or _is_category_ignored_on_item(item, cat)
+            ):
                 item.set(slot, "")
                 continue
 

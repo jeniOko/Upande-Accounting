@@ -18,6 +18,9 @@ frappe.query_reports["Debtors Aging"] = {
                 in_party_currency: frappe.query_report.get_filter_value("in_party_currency") || 0,
                 include_draft:     frappe.query_report.get_filter_value("include_draft") || 0,
                 show_advance_payment: frappe.query_report.get_filter_value("show_advance_payment") || 0,
+                // The summary is already one row per customer, so it has no "Group by Customer"
+                group_by:          frappe.query_report.get_filter_value("group_by") === "Group by Customer"
+                                       ? "" : frappe.query_report.get_filter_value("group_by") || "",
             };
             frappe.set_route("query-report", "Debtors Aging Summary");
         });
@@ -64,6 +67,12 @@ frappe.query_reports["Debtors Aging"] = {
             label:     __("Ageing Range (days)"),
             fieldtype: "Data",
             default:   "30, 60, 90, 120",
+        },
+        {
+            fieldname: "group_by",
+            label:     __("Group By"),
+            fieldtype: "Select",
+            options:   "\nGroup by Currency\nGroup by Customer\nGroup by Customer Group\nGroup by Territory",
         },
         {
             fieldname: "party_account",

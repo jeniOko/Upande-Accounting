@@ -14,6 +14,8 @@ Payment Ledger Entry) and layers in two additions:
   2. in_party_currency  — amounts shown in the customer's own currency
      (passes through to the base ReceivablePayableReport which already
      handles this; it is simply not exposed in the standard AR Summary).
+     The base summary still takes Advance Amount in company currency, so
+     it is re-derived in party currency (aging_utils).
 
   3. Custom column layout — Credit Note / Outstanding / Invoiced Amount sit
      after the ageing buckets, just before Territory / Customer Group; the
@@ -23,6 +25,10 @@ Payment Ledger Entry) and layers in two additions:
      and Paid Amount columns so the summary reads as pure invoice totals.
      Checking it shows both (the underlying figures are always computed;
      this only gates what's rendered).
+
+  5. group_by  — Group by Currency / Customer Group / Territory: rows sit
+     under a bold header per group with a sub-total per currency
+     (aging_utils.group_rows).
 """
 
 import frappe
@@ -33,6 +39,13 @@ from erpnext.accounts.report.accounts_receivable_summary.accounts_receivable_sum
     AccountsReceivableSummary,
 )
 from erpnext.accounts.utils import get_party_types_from_account_type
+
+from upande_accounting.upande_accounting_customizations.report.aging_utils import (
+    add_party_name_column,
+    group_rows,
+    set_advance_in_party_currency,
+    sort_by_party,
+)
 
 
 def execute(filters=None):
@@ -65,9 +78,6 @@ class DebtorsAgingReport(AccountsReceivableSummary):
                         options="party_type", width=300)
         self.add_column(_("Currency"),   fieldname="currency",   fieldtype="Link",
                         options="Currency", width=80)
-
-        if self.party_naming_by == "Naming Series":
-            self.add_column(_("Customer Name"), fieldname="party_name", fieldtype="Data", width=200)
 
         if self.filters.get("show_advance_payment"):
             self.add_column(_("Advance Amount"), fieldname="advance", width=130)
@@ -113,8 +123,13 @@ class DebtorsAgingReport(AccountsReceivableSummary):
 
     def get_data(self, args):
         super().get_data(args)
+        if self.filters.get("in_party_currency"):
+            set_advance_in_party_currency(self.data, self.party_type, self.filters)
         if self.filters.get("include_draft"):
             self._merge_draft_invoices()
+        sort_by_party(self.data, "Customer")
+        add_party_name_column(self.columns, self.data, "Customer")
+        self.data = group_rows(self.data, self.columns, self.filters)
 
     def _merge_draft_invoices(self):
         company       = self.filters.company
@@ -183,6 +198,8 @@ class DebtorsAgingReport(AccountsReceivableSummary):
             draft_by_party[party].invoiced               += amount
             draft_by_party[party][f"range{bucket + 1}"] += amount
 
+        company_currency = frappe.get_cached_value("Company", company, "default_currency")
+
         # Merge into existing summary rows or add new ones
         existing = {row.party: row for row in self.data}
 
@@ -197,17 +214,21 @@ class DebtorsAgingReport(AccountsReceivableSummary):
                 row.has_draft = True
             else:
                 # Customer has only draft invoices — no Payment Ledger history
-                party_name = frappe.db.get_value("Customer", party, "customer_name")
+                details = frappe.db.get_value(
+                    "Customer", party, ["customer_name", "territory", "customer_group"], as_dict=True
+                ) or {}
                 new_row = frappe._dict(
                     party       = party,
                     party_type  = "Customer",
-                    party_name  = party_name or party,
+                    party_name  = details.get("customer_name") or party,
+                    territory   = details.get("territory"),
+                    customer_group = details.get("customer_group"),
                     outstanding = draft.outstanding,
                     invoiced    = draft.invoiced,
                     paid        = 0.0,
                     credit_note = 0.0,
                     advance     = 0.0,
-                    currency    = draft.currency,
+                    currency    = draft.currency if in_party_cur else company_currency,
                     has_draft   = True,
                     total_due   = sum(flt(draft.get(f"range{rn}", 0)) for rn in range_numbers),
                 )

@@ -11,11 +11,11 @@ receivable) and adds:
      Amounts are placed in the correct aging bucket; rows flagged has_draft = True
      receive a "Has Drafts" badge in the JS.
 
-  2. in_party_currency  — exposed as an explicit filter. The base report converts
-     invoice-derived figures (invoiced) to party currency, but NOT the
-     payment-derived figures (paid, advance) in the summary rollup. This report
-     re-derives paid and advance directly from Payment Entries in party currency
-     (each payment at its own exchange rate), then recomputes outstanding.
+  2. in_party_currency  — exposed as an explicit filter. The base report puts
+     invoiced / paid / outstanding in party currency, but still takes Advance
+     Amount in company currency; it is re-derived from the Payment Ledger in
+     the supplier's account currency (aging_utils), covering Payment Entries
+     and Journal Entries alike.
 
   3. Custom column layout  — Currency after Party, Debit Note instead of Credit Note,
      Supplier Group instead of Territory / Customer Group. Debit Note /
@@ -27,6 +27,9 @@ receivable) and adds:
      and Paid Amount columns so the summary reads as pure invoice totals.
      Checking it shows both (the underlying figures are always computed;
      this only gates what's rendered).
+
+  5. group_by  — Group by Currency / Supplier Group: rows sit under a bold
+     header per group with a sub-total per currency (aging_utils.group_rows).
 """
 
 import frappe
@@ -37,6 +40,13 @@ from erpnext.accounts.report.accounts_receivable_summary.accounts_receivable_sum
     AccountsReceivableSummary,
 )
 from erpnext.accounts.utils import get_party_types_from_account_type
+
+from upande_accounting.upande_accounting_customizations.report.aging_utils import (
+    add_party_name_column,
+    group_rows,
+    set_advance_in_party_currency,
+    sort_by_party,
+)
 
 
 def execute(filters=None):
@@ -69,9 +79,6 @@ class CreditorsAgingSummaryReport(AccountsReceivableSummary):
                         options="party_type", width=250)
         self.add_column(_("Currency"),   fieldname="currency",   fieldtype="Link",
                         options="Currency", width=80)
-
-        if self.party_naming_by == "Naming Series":
-            self.add_column(_("Supplier Name"), fieldname="party_name", fieldtype="Data", width=200)
 
         if self.filters.get("show_advance_payment"):
             self.add_column(_("Advance Amount"), fieldname="advance", width=130)
@@ -117,140 +124,14 @@ class CreditorsAgingSummaryReport(AccountsReceivableSummary):
         super().get_data(args)
 
         if self.filters.get("in_party_currency"):
-            self._fix_party_currency_payments()
+            set_advance_in_party_currency(self.data, self.party_type, self.filters)
 
         if self.filters.get("include_draft"):
             self._merge_draft_invoices()
 
-    # ------------------------------------------------------------------
-    # Paid / Advance in party currency (each payment at its own rate)
-    # ------------------------------------------------------------------
-
-    def _fix_party_currency_payments(self):
-        """
-        The base summary report leaves `paid` and `advance` in company currency.
-        Re-derive them per supplier directly from submitted Payment Entries in
-        the party's own currency, then recompute outstanding.
-
-        - paid    = payment amount allocated against Purchase Invoices (party ccy)
-        - advance = payment amount NOT allocated to any invoice (party ccy)
-
-        Each Payment Entry contributes at its own exchange rate, because we read
-        the party-currency field (paid_amount / received_amount) stored on the PE.
-        """
-        company     = self.filters.company
-        report_date = getdate(self.filters.report_date)
-
-        party_filter = ""
-        params = [company, report_date]
-        if self.filters.get("party"):
-            parties = self.filters.get("party")
-            if isinstance(parties, str):
-                parties = [parties]
-            placeholders = ", ".join(["%s"] * len(parties))
-            party_filter = f" AND pe.party IN ({placeholders})"
-            params.extend(parties)
-
-        # For a "Pay" Payment Entry to a supplier, the party-currency amount is
-        # `paid_amount` (the amount leaving in the party/transaction currency is
-        # `paid_amount` when paid_from is company ccy; ERPNext stores the party
-        # side in `paid_amount` for payments where party currency == paid_to ccy).
-        # We use `paid_amount` as the party-currency figure and fall back to
-        # base_paid_amount only if paid_amount is zero.
-        payments = frappe.db.sql(
-            f"""
-            SELECT
-                pe.name              AS payment_entry,
-                pe.party             AS party,
-                pe.paid_amount       AS paid_amount,
-                pe.base_paid_amount  AS base_paid_amount,
-                pe.unallocated_amount AS unallocated_amount,
-                pe.source_exchange_rate AS source_rate,
-                pe.target_exchange_rate AS target_rate
-            FROM `tabPayment Entry` pe
-            WHERE pe.docstatus    = 1
-              AND pe.payment_type = 'Pay'
-              AND pe.party_type   = 'Supplier'
-              AND pe.company      = %s
-              AND pe.posting_date <= %s
-              {party_filter}
-            """,
-            params,
-            as_dict=True,
-        )
-
-        if not payments:
-            return
-
-        pe_names = [p.payment_entry for p in payments]
-
-        # Allocated amounts per Payment Entry against Purchase Invoices.
-        # `allocated_amount` on the reference row is in the PE's paid-from
-        # currency context; we use the ratio of allocated/total to split the
-        # party-currency paid_amount into paid vs advance, so currency stays
-        # consistent regardless of which field ERPNext populated.
-        placeholders = ", ".join(["%s"] * len(pe_names))
-        refs = frappe.db.sql(
-            f"""
-            SELECT
-                per.parent           AS payment_entry,
-                per.reference_doctype AS reference_doctype,
-                per.allocated_amount  AS allocated_amount
-            FROM `tabPayment Entry Reference` per
-            WHERE per.parent IN ({placeholders})
-              AND per.docstatus = 1
-            """,
-            pe_names,
-            as_dict=True,
-        )
-
-        allocated_by_pe = {}
-        for r in refs:
-            if r.reference_doctype == "Purchase Invoice":
-                allocated_by_pe[r.payment_entry] = (
-                    allocated_by_pe.get(r.payment_entry, 0.0) + flt(r.allocated_amount)
-                )
-
-        paid_by_party    = {}
-        advance_by_party = {}
-
-        for pe in payments:
-            party = pe.party
-
-            # Party-currency total for this payment.
-            party_total = flt(pe.paid_amount) or flt(pe.base_paid_amount)
-            if not party_total:
-                continue
-
-            # Split into allocated (paid) vs unallocated (advance) using the
-            # company-currency proportions, then apply to the party-ccy total.
-            base_total = flt(pe.base_paid_amount) or party_total
-            allocated_base = allocated_by_pe.get(pe.payment_entry, 0.0)
-
-            if base_total:
-                alloc_ratio = min(max(allocated_base / base_total, 0.0), 1.0)
-            else:
-                alloc_ratio = 0.0
-
-            paid_part    = party_total * alloc_ratio
-            advance_part = party_total - paid_part
-
-            paid_by_party[party]    = paid_by_party.get(party, 0.0) + paid_part
-            advance_by_party[party] = advance_by_party.get(party, 0.0) + advance_part
-
-        # Overwrite the company-currency paid/advance left by the base report,
-        # then recompute outstanding for each affected row.
-        for row in self.data:
-            party = row.get("party")
-            if party in paid_by_party or party in advance_by_party:
-                row.paid    = flt(paid_by_party.get(party, 0.0))
-                row.advance = flt(advance_by_party.get(party, 0.0))
-                row.outstanding = (
-                    flt(row.get("invoiced"))
-                    - flt(row.get("paid"))
-                    - flt(row.get("credit_note"))
-                    + flt(row.get("advance"))
-                )
+        sort_by_party(self.data, "Supplier")
+        add_party_name_column(self.columns, self.data, "Supplier")
+        self.data = group_rows(self.data, self.columns, self.filters)
 
     # ------------------------------------------------------------------
     # Draft Purchase Invoices
@@ -320,6 +201,7 @@ class CreditorsAgingSummaryReport(AccountsReceivableSummary):
             draft_by_party[party].invoiced               += amount
             draft_by_party[party][f"range{bucket + 1}"] += amount
 
+        company_currency = frappe.get_cached_value("Company", company, "default_currency")
         existing = {row.party: row for row in self.data}
 
         for party, draft in draft_by_party.items():
@@ -332,17 +214,20 @@ class CreditorsAgingSummaryReport(AccountsReceivableSummary):
                 row.total_due = sum(flt(row.get(f"range{rn}", 0)) for rn in range_numbers)
                 row.has_draft = True
             else:
-                supp_name = frappe.db.get_value("Supplier", party, "supplier_name")
+                details = frappe.db.get_value(
+                    "Supplier", party, ["supplier_name", "supplier_group"], as_dict=True
+                ) or {}
                 new_row = frappe._dict(
                     party       = party,
                     party_type  = "Supplier",
-                    party_name  = supp_name or party,
+                    party_name  = details.get("supplier_name") or party,
+                    supplier_group = details.get("supplier_group"),
                     outstanding = draft.outstanding,
                     invoiced    = draft.invoiced,
                     paid        = 0.0,
                     credit_note = 0.0,
                     advance     = 0.0,
-                    currency    = draft.currency,
+                    currency    = draft.currency if in_party_cur else company_currency,
                     has_draft   = True,
                     total_due   = sum(flt(draft.get(f"range{rn}", 0)) for rn in range_numbers),
                 )

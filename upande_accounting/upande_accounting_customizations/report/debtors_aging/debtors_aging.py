@@ -23,9 +23,13 @@ Inherits the full ReceivablePayableReport logic from ERPNext and adds:
      Amount moved to sit after the ageing buckets and before Customer LPO;
      the base report's "<0" (not-yet-due) ageing column is dropped.
 
+  5. group_by  — Group by Currency / Customer / Customer Group / Territory: rows sit
+     under a bold header per group with a sub-total per currency
+     (aging_utils.group_rows).
+
 Navigation: a top-right button switches to Debtors Aging Summary,
 carrying company / report_date / ageing_based_on / range / party /
-in_party_currency / include_draft / show_advance_payment across.
+in_party_currency / include_draft / show_advance_payment / group_by across.
 """
 
 import frappe
@@ -33,6 +37,12 @@ from frappe import _, scrub
 from frappe.utils import cint, flt, getdate
 
 from erpnext.accounts.report.accounts_receivable.accounts_receivable import ReceivablePayableReport
+
+from upande_accounting.upande_accounting_customizations.report.aging_utils import (
+    group_rows,
+    is_grouped,
+    sort_by_party,
+)
 
 
 def execute(filters=None):
@@ -169,6 +179,13 @@ class DebtorsAgingReport(ReceivablePayableReport):
         super().get_data()
         if self.filters.get("include_draft"):
             self._append_draft_rows()
+        # Oldest first; party name A to Z only breaks ties on the same date
+        sort_by_party(self.data, "Customer", date_fields=("posting_date",))
+        if is_grouped(self.filters):
+            self.data = group_rows(self.data, self.columns, self.filters)
+            # Group sub-totals are already in the data; Frappe's own total
+            # row would add them in a second time.
+            self.skip_total_row = 1
 
     def _append_draft_rows(self):
         company      = self.filters.company

@@ -25,6 +25,9 @@ Inherits the full ReceivablePayableReport logic from ERPNext and adds:
      unallocated Payment Entry / Journal Entry "advance" rows and the Paid
      Amount column. Checking it restores both.
 
+  6. group_by  — Group by Currency / Supplier / Supplier Group: rows sit under a bold
+     header per group with a sub-total per currency (aging_utils.group_rows).
+
 Navigation: "Creditors Aging Summary" button switches to the per-supplier
 summary carrying all filters across.
 """
@@ -34,6 +37,12 @@ from frappe import _, scrub
 from frappe.utils import cint, flt, getdate
 
 from erpnext.accounts.report.accounts_receivable.accounts_receivable import ReceivablePayableReport
+
+from upande_accounting.upande_accounting_customizations.report.aging_utils import (
+    group_rows,
+    is_grouped,
+    sort_by_party,
+)
 
 
 def execute(filters=None):
@@ -158,6 +167,13 @@ class CreditorsAgingReport(ReceivablePayableReport):
         super().get_data()
         if self.filters.get("include_draft"):
             self._append_draft_rows()
+        # Oldest first; party name A to Z only breaks ties on the same date
+        sort_by_party(self.data, "Supplier", date_fields=("bill_date", "posting_date"))
+        if is_grouped(self.filters):
+            self.data = group_rows(self.data, self.columns, self.filters)
+            # Group sub-totals are already in the data; Frappe's own total
+            # row would add them in a second time.
+            self.skip_total_row = 1
 
     def _append_draft_rows(self):
         company      = self.filters.company

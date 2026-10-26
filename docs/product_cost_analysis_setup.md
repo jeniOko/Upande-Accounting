@@ -50,7 +50,7 @@ Only Accounts Managers can edit these fields. Item Managers and Stock Managers c
 | Production Cost | All costs charged to the product in the period. |
 | Cost per Unit | Production cost ÷ produced qty. |
 
-- **Show Cost Breakdown** splits each item into Direct and Indirect costs by account group. Indirect lines show the allocation, e.g. *Packhouse 3,400,000 × 35% (production qty share) = 1,190,000*.
+- **Show Cost Breakdown** splits each item into Direct and Indirect costs, then by account group, then by account (shown by name, e.g. *Fertilizers*). Click any line to open the General Ledger for that account and cost center. Where a cost center is shared, the General Ledger shows its full amount and the report line shows the item's share. Indirect lines show the allocation, e.g. *Packhouse 3,400,000 × 35% (production qty share) = 1,190,000*.
 - **Show Per Unit** shows costs and margins per unit sold.
 - **Periodicity** adds produced qty, revenue, cost per unit and net margin for each period.
 - **Cost Center, Project and dimension filters** (e.g. Farm) narrow costs, production and sales together. If production or sales rows are missing the dimension, the report warns you.

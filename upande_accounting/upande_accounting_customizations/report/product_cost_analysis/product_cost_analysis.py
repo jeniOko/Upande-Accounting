@@ -329,12 +329,14 @@ class ProductCostAnalysis:
 		)
 		accounts = {r.account for r in self.gl_rows}
 		parents = {}
+		self.account_label = {}
 		if accounts:
-			parents = dict(
-				frappe.get_all(
-					"Account", filters={"name": ["in", list(accounts)]}, fields=["name", "parent_account"], as_list=True
-				)
-			)
+			for a in frappe.get_all(
+				"Account", filters={"name": ["in", list(accounts)]}, fields=["name", "parent_account", "account_name"]
+			):
+				parents[a.name] = a.parent_account
+				# account_name carries neither the account number nor the company abbreviation
+				self.account_label[a.name] = a.account_name or a.name
 		names = dict(
 			frappe.get_all(
 				"Account",
@@ -494,7 +496,7 @@ class ProductCostAnalysis:
 		return {c: (remainder * raw[c] / total_raw, labels[c]) for c in codes}
 
 	def add_line(self, item, kind, source, category, period, amount, account=None, label=None):
-		key = (kind, source, category)
+		key = (kind, source, category, account)
 		line = item.lines.get(key)
 		if not line:
 			line = item.lines[key] = frappe._dict(
@@ -772,6 +774,10 @@ class ProductCostAnalysis:
 				row["_drill"] = {"gl": self.gl_filters(accounts, sources or item.sources)}
 			return row
 
+		def sources_of(lines):
+			# GL drill-down narrows to the sources these lines came from; chained inputs have none.
+			return sorted({l.source for l in lines if l.source and l.source[0] != "Item"}, key=lambda s: s[1])
+
 		def merged(lines):
 			out = defaultdict(float)
 			for line in lines:
@@ -779,21 +785,41 @@ class ProductCostAnalysis:
 					out[p] += v
 			return out
 
+		def category_rows(lines, kind, level, sources):
+			"""Account group rows, each followed by its accounts. Chained inputs have no account."""
+			by_category = defaultdict(list)
+			for line in lines:
+				by_category[line.category].append(line)
+			for category in sorted(by_category):
+				cat_lines = by_category[category]
+				cat_accounts = set().union(*(l.accounts for l in cat_lines))
+				rows.append(line_row(category, merged(cat_lines), kind, level, cat_accounts, sources or sources_of(cat_lines)))
+
+				by_account = defaultdict(list)
+				for line in cat_lines:
+					for account in line.accounts:
+						by_account[account].append(line)
+				for account in sorted(by_account, key=lambda a: self.account_label.get(a, a)):
+					rows.append(
+						line_row(
+							self.account_label.get(account, account),
+							merged(by_account[account]),
+							kind,
+							level + 1,
+							{account},
+							sources or sources_of(by_account[account]),
+						)
+					)
+
 		for kind in (DIRECT, INDIRECT):
 			kind_lines = [l for l in item.lines.values() if l.kind == kind]
 			if not kind_lines:
 				continue
 			all_accounts = set().union(*(l.accounts for l in kind_lines))
-			rows.append(line_row(_(kind), merged(kind_lines), kind, indent, all_accounts))
+			rows.append(line_row(_(kind), merged(kind_lines), kind, indent, all_accounts, sources_of(kind_lines)))
 
 			if kind == DIRECT:
-				by_category = defaultdict(list)
-				for line in kind_lines:
-					by_category[line.category].append(line)
-				for category in sorted(by_category):
-					lines = by_category[category]
-					accounts = set().union(*(l.accounts for l in lines))
-					rows.append(line_row(category, merged(lines), kind, indent + 1, accounts))
+				category_rows(kind_lines, kind, indent + 1, None)
 				continue
 
 			by_source = defaultdict(list)
@@ -807,13 +833,7 @@ class ProductCostAnalysis:
 						source[1], merged(lines), kind, indent + 1, accounts, [source], self.trail(item, source)
 					)
 				)
-				by_category = defaultdict(list)
-				for line in lines:
-					by_category[line.category].append(line)
-				for category in sorted(by_category):
-					cat_lines = by_category[category]
-					cat_accounts = set().union(*(l.accounts for l in cat_lines))
-					rows.append(line_row(category, merged(cat_lines), kind, indent + 2, cat_accounts, [source]))
+				category_rows(lines, kind, indent + 2, [source])
 		return rows
 
 	def trail(self, item, source):

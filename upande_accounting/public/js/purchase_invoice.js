@@ -60,44 +60,100 @@ function _set_withholding_queries(frm) {
 // Fill Control Unit Invoice Number from the QR code on a KRA ETR / eTIMS
 // receipt. Most users are on desktops, so the phone option pairs their phone
 // as a camera: it scans and the number is pushed back here over realtime
-// (or picked up by polling where realtime isn't available).
-function _add_cuin_scan_buttons(frm) {
-	if (frm.doc.docstatus !== 0 || !_cuin_scanning_enabled()) return;
-
-	const group = __("Scan CU Receipt");
-	frm.add_custom_button(__("Using My Phone"), () => _scan_cuin_with_phone(frm), group);
-	frm.add_custom_button(__("Using This Computer's Camera"), () => _scan_cuin_with_webcam(frm), group);
-	_style_cuin_scan_button(frm, group);
-}
-
+// (or picked up by polling where realtime isn't available). The number can
+// also be read from an image or PDF already attached to the invoice.
 const CUIN_FIELD = "custom_control_unit_invoice_number";
+const CUIN_BUTTONS = ["Using My Phone", "Using This Computer's Camera", "From an Attachment"];
 
-// Switched in Accounts Settings > Invoice and Billing; on unless turned off
-function _cuin_scanning_enabled() {
-	return cint(frappe.boot.upande_cuin_scanning_enabled ?? 1) === 1;
+function _add_cuin_scan_buttons(frm) {
+	// Checked live on every load, so switching the feature off in Accounts
+	// Settings applies at once, without a restart or fresh login
+	frappe.xcall("upande_accounting.cuin_scanner.get_scanner_config").then((config) => {
+		frm.__cuin_config = config;
+		const group = __("Scan CU Receipt");
+		// The form may have refreshed again while this was loading; never add twice
+		CUIN_BUTTONS.forEach((label) => frm.remove_custom_button(__(label), group));
+		if (!config.enabled || frm.doc.docstatus !== 0) return;
+
+		frm.add_custom_button(__("Using My Phone"), () => _scan_cuin_with_phone(frm), group);
+		frm.add_custom_button(__("Using This Computer's Camera"), () => _scan_cuin_with_webcam(frm), group);
+		frm.add_custom_button(__("From an Attachment"), () => _read_cuin_from_attachment(frm), group);
+		_style_cuin_scan_button(group);
+	});
 }
 
-// Blue highlight that reads the same in light and dark mode
-function _style_cuin_scan_button(frm, group) {
-	if (!document.getElementById("upande-cuin-scan-style")) {
-		$(`<style id="upande-cuin-scan-style">
-			.btn.upande-cuin-scan-btn,
-			.btn.upande-cuin-scan-btn:focus {
-				background-color: var(--blue-600);
-				border-color: var(--blue-600);
-				color: #fff;
-				--icon-stroke: #fff;
-			}
-			.btn.upande-cuin-scan-btn:hover,
-			.btn.upande-cuin-scan-btn:active,
-			.show > .btn.upande-cuin-scan-btn {
-				background-color: var(--blue-700);
-				border-color: var(--blue-700);
-				color: #fff;
-			}
-		</style>`).appendTo("head");
+// Blue highlight that reads the same in light and dark mode. Targeted by the
+// group's data-label (not a class) so it survives the toolbar being re-rendered.
+function _style_cuin_scan_button(group) {
+	if (document.getElementById("upande-cuin-scan-style")) return;
+	const button = `.inner-group-button[data-label="${encodeURIComponent(group)}"] > .btn`;
+	$(`<style id="upande-cuin-scan-style">
+		${button},
+		${button}:focus {
+			background-color: var(--blue-600) !important;
+			border-color: var(--blue-600) !important;
+			color: #fff !important;
+			--icon-stroke: #fff;
+		}
+		${button}:hover,
+		${button}:active,
+		.inner-group-button.show > .btn,
+		${button}[aria-expanded="true"] {
+			background-color: var(--blue-700) !important;
+			border-color: var(--blue-700) !important;
+			color: #fff !important;
+		}
+	</style>`).appendTo("head");
+}
+
+// Loads zxing and the camera module at their versioned URLs (production nginx
+// caches /assets for a year, so unversioned URLs would keep serving old code)
+function _load_cuin_scanner(frm) {
+	const config = frm.__cuin_config;
+	if (!config || !config.assets || !config.assets.camera) {
+		return Promise.reject(new Error("CU scanner config not loaded"));
 	}
-	frm.page.get_inner_group_button(group).find("> button").removeClass("btn-default").addClass("upande-cuin-scan-btn");
+	// Not frappe.require: it picks a loader by file extension, which a ?v= query
+	// breaks, and it reports success even when a script fails to load
+	return _load_script(config.assets.zxing)
+		.then(() => _load_script(config.assets.camera))
+		.then(() => {
+			if (!window.upande_cuin_camera || !window.ZXingWASM) throw new Error("CU scanner scripts failed to load");
+			upande_cuin_camera.configure(config.assets);
+		});
+}
+
+const _loaded_scripts = {};
+
+function _load_script(url) {
+	if (!_loaded_scripts[url]) {
+		_loaded_scripts[url] = new Promise((resolve, reject) => {
+			const script = document.createElement("script");
+			script.src = url;
+			script.onload = resolve;
+			script.onerror = () => {
+				delete _loaded_scripts[url];
+				reject(new Error(`Could not load ${url}`));
+			};
+			document.head.appendChild(script);
+		});
+	}
+	return _loaded_scripts[url];
+}
+
+// Dialogs stay in the DOM after closing; remove them so every open starts fresh
+function _destroy_dialog_after_hide(dialog) {
+	setTimeout(() => dialog.$wrapper.remove(), 500);
+}
+
+// Bootstrap ignores hide() while the opening animation runs, and a cached
+// scanner can read a code before it ends; wait for it so the dialog really closes
+function _close_dialog(dialog) {
+	if (dialog.display) {
+		dialog.hide();
+	} else {
+		dialog.$wrapper.one("shown.bs.modal", () => dialog.hide());
+	}
 }
 
 // Every scan replaces the field: it's cleared when scanning starts and on an
@@ -122,7 +178,8 @@ function _invalid_scan_message(result) {
 // number; a number typed by hand is left exactly as entered.
 function _parse_typed_cuin(frm) {
 	const raw = (frm.doc[CUIN_FIELD] || "").trim();
-	if (!_cuin_scanning_enabled() || !raw || !(raw.includes("://") || /\s/.test(raw))) return;
+	if (frm.__cuin_config && !frm.__cuin_config.enabled) return;
+	if (!raw || !(raw.includes("://") || /\s/.test(raw))) return;
 
 	frappe.call({
 		method: "upande_accounting.cuin_scanner.parse_scan",
@@ -176,7 +233,10 @@ function _scan_cuin_with_webcam(frm) {
 	const $wrapper = dialog.fields_dict.camera.$wrapper;
 	$wrapper.html(`
 		<p class="text-muted">${__("Hold the receipt's QR code inside the square, close enough to fill it but still sharp.")}</p>
-		<div class="cuin-webcam-reader"></div>
+		<div class="cuin-webcam-reader" style="min-height: 160px; background: #000; border-radius: 8px;
+			display: flex; align-items: center; justify-content: center; color: #fff; font-size: 13px;">
+			${__("Loading scanner...")}
+		</div>
 		<div style="margin-top: 8px;">
 			<button type="button" class="btn btn-default btn-sm cuin-upload-photo">${__("Upload Photo of Receipt")}</button>
 			<input type="file" accept="image/*" class="cuin-photo-input" style="display: none;">
@@ -186,15 +246,33 @@ function _scan_cuin_with_webcam(frm) {
 	const $status = $wrapper.find(".cuin-scan-status");
 
 	let scanner = null;
-	dialog.onhide = () => scanner && scanner.stop();
+	// Not dialog.display: that only turns true once the opening animation ends,
+	// so a fast (cached) script load would look like a closed dialog
+	let closed = false;
+	dialog.onhide = () => {
+		closed = true;
+		scanner && scanner.stop();
+		_destroy_dialog_after_hide(dialog);
+	};
 	dialog.show();
+
+	const scripts_ready = _load_cuin_scanner(frm);
+	const load_failed = (err) => {
+		console.error(err);
+		$wrapper.find(".cuin-webcam-reader").text(__("Scanner failed to load."));
+		_set_scan_status(
+			$status,
+			__("Couldn't load the scanner. Refresh the page (Ctrl+Shift+R) and try again, or use your phone instead."),
+			"danger"
+		);
+	};
 
 	const handle_text = (text) => {
 		scanner && scanner.pause();
 		_set_scan_status($status, __("Reading receipt..."), "info");
 		frappe.xcall("upande_accounting.cuin_scanner.parse_scan", { scanned_text: text }).then((result) => {
 			if (result.valid) {
-				dialog.hide();
+				_close_dialog(dialog);
 				_set_cuin(frm, result.cuin);
 			} else {
 				_set_scan_status($status, _invalid_scan_message(result), "warning");
@@ -209,23 +287,22 @@ function _scan_cuin_with_webcam(frm) {
 		if (!file) return;
 		scanner && scanner.pause();
 		_set_scan_status($status, __("Reading photo..."), "info");
-		upande_cuin_camera.decode_file(file).then((text) => {
-			if (text) {
-				handle_text(text);
-			} else {
-				_set_scan_status($status, __("No QR code found in the photo. Try a closer, sharper photo."), "warning");
-				scanner && scanner.resume();
-			}
-		});
+		scripts_ready
+			.then(() => upande_cuin_camera.decode_file(file))
+			.then((text) => {
+				if (text) {
+					handle_text(text);
+				} else {
+					_set_scan_status($status, __("No QR code found in the photo. Try a closer, sharper photo."), "warning");
+					scanner && scanner.resume();
+				}
+			})
+			.catch(load_failed);
 	});
 
-	frappe
-		.require([
-			"/assets/upande_accounting/js/lib/zxing-wasm/zxing_reader.iife.js",
-			"/assets/upande_accounting/js/cuin_scan_camera.js",
-		])
+	scripts_ready
 		.then(() => {
-			if (!dialog.display) return;
+			if (closed) return;
 			return upande_cuin_camera.open($wrapper.find(".cuin-webcam-reader")[0], {
 				aspect: "4 / 3",
 				on_text: handle_text,
@@ -239,26 +316,16 @@ function _scan_cuin_with_webcam(frm) {
 		})
 		.then((s) => {
 			scanner = s;
-			if (scanner && !dialog.display) scanner.stop();
-		});
+			if (scanner && closed) scanner.stop();
+		})
+		.catch(load_failed);
 }
 
-function _get_phone_scan_session(frm) {
-	// Reuse the phone link while it's still valid so a rescan doesn't need re-pairing
-	const cached = frm.__cuin_phone_session;
-	if (cached && cached.expires_at > Date.now() + 60 * 1000) return Promise.resolve(cached);
-
-	return frappe.xcall("upande_accounting.cuin_scanner.create_scan_session").then((s) => {
-		s.expires_at = Date.now() + 14 * 60 * 1000;
-		frm.__cuin_phone_session = s;
-		return s;
-	});
-}
-
+// A new phone link every time: never reuse an earlier session or dialog
 function _scan_cuin_with_phone(frm) {
 	_clear_cuin(frm);
 
-	_get_phone_scan_session(frm).then((s) => {
+	frappe.xcall("upande_accounting.cuin_scanner.create_scan_session").then((s) => {
 		const seen = new Set();
 		const handler = (data) => {
 			if (!data || data.session !== s.session || seen.has(data.scan_id)) return;
@@ -298,6 +365,7 @@ function _scan_cuin_with_phone(frm) {
 			on_hide: () => {
 				clearInterval(poll);
 				frappe.realtime.off(s.event, handler);
+				_destroy_dialog_after_hide(dialog);
 			},
 		});
 
@@ -306,7 +374,6 @@ function _scan_cuin_with_phone(frm) {
 				<p>${__("Scan this code with your phone's camera, log in as yourself if asked, then scan the receipt's QR code.")}</p>
 				<img src="data:image/svg+xml;base64,${s.qr_svg}" style="width: 220px; height: 220px;">
 				<p class="small text-muted" style="word-break: break-all;">${frappe.utils.escape_html(s.url)}</p>
-				<p class="text-muted">${__("Already have the scan page open on your phone? Just scan the receipt.")}</p>
 				<div class="cuin-scan-status"></div>
 			</div>
 		`);
@@ -316,4 +383,82 @@ function _scan_cuin_with_phone(frm) {
 		frappe.realtime.on(s.event, handler);
 		dialog.show();
 	});
+}
+
+const CUIN_ATTACHMENT_RE = /\.(pdf|png|jpe?g|webp|gif|bmp|heic|heif)$/i;
+
+// Read the CU invoice number from an image or PDF attached to this invoice
+function _read_cuin_from_attachment(frm) {
+	const files = (frm.get_docinfo().attachments || []).filter((f) => CUIN_ATTACHMENT_RE.test(f.file_url || ""));
+	if (!files.length) {
+		frappe.msgprint(
+			__("This invoice has no image or PDF attachments. Attach the receipt or invoice first, or scan it with your phone or camera.")
+		);
+		return;
+	}
+	if (files.length === 1) {
+		_read_cuin_attachment(frm, files[0]);
+		return;
+	}
+
+	frappe.prompt(
+		{
+			fieldtype: "Select",
+			fieldname: "file_url",
+			label: __("Attachment"),
+			reqd: 1,
+			options: files.map((f) => ({ label: f.file_name || f.file_url, value: f.file_url })),
+			default: files[0].file_url,
+		},
+		(values) => _read_cuin_attachment(frm, files.find((f) => f.file_url === values.file_url)),
+		__("Read CU Invoice Number from Attachment"),
+		__("Read")
+	);
+}
+
+function _read_cuin_attachment(frm, file) {
+	const name = file.file_name || file.file_url;
+	const is_pdf = /\.pdf$/i.test(file.file_url);
+	_clear_cuin(frm);
+	frappe.dom.freeze(__("Reading {0}...", [name]));
+
+	// PDFs: the text and links first (fast, server side), then render the pages
+	// and look for the QR code; images: decode the QR code in the browser
+	const from_text = is_pdf
+		? frappe.xcall("upande_accounting.cuin_scanner.read_attachment_cuin", {
+				doctype: frm.doctype,
+				docname: frm.doc.name,
+				file_url: file.file_url,
+		  })
+		: Promise.resolve(null);
+
+	from_text
+		.then((result) => {
+			if (result && result.valid) return result;
+			return _load_cuin_scanner(frm)
+				.then(() => fetch(file.file_url, { credentials: "same-origin" }))
+				.then((response) => {
+					if (!response.ok) throw new Error(`Could not download ${file.file_url}: ${response.status}`);
+					return is_pdf ? response.arrayBuffer() : response.blob();
+				})
+				.then((data) => (is_pdf ? upande_cuin_camera.decode_pdf(data) : upande_cuin_camera.decode_file(data)))
+				.then((text) =>
+					text ? frappe.xcall("upande_accounting.cuin_scanner.parse_scan", { scanned_text: text }) : null
+				);
+		})
+		.then((result) => {
+			frappe.dom.unfreeze();
+			if (result && result.valid) {
+				_set_cuin(frm, result.cuin);
+			} else if (result) {
+				frappe.msgprint(_invalid_scan_message(result));
+			} else {
+				frappe.msgprint(__("No KRA receipt QR code or CU Invoice Number was found in {0}.", [name]));
+			}
+		})
+		.catch((err) => {
+			frappe.dom.unfreeze();
+			console.error(err);
+			frappe.msgprint(__("Couldn't read {0}. Try another attachment, or scan the receipt with your phone.", [name]));
+		});
 }

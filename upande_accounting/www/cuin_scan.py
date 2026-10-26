@@ -2,7 +2,7 @@ from urllib.parse import quote
 
 import frappe
 
-from upande_accounting.cuin_scanner import is_scanning_enabled
+from upande_accounting.cuin_scanner import is_scanning_enabled, scanner_assets
 
 no_cache = 1
 
@@ -14,4 +14,5 @@ def get_context(context):
 
 	context.session = frappe.form_dict.get("session") or ""
 	context.enabled = is_scanning_enabled()
+	context.assets = scanner_assets() if context.enabled else {}
 	context.no_header = 1

@@ -13,12 +13,18 @@
 // - keeps one camera stream open and only pauses decoding between scans, and
 //   reopens the camera if the phone drops it (screen lock, app switch);
 // - can decode a still photo (decode_file), which gets the phone camera app's
-//   full resolution, proper focus and macro mode for the smallest codes.
+//   full resolution, proper focus and macro mode for the smallest codes, and
+//   the pages of a PDF (decode_pdf, rendered with pdf.js).
 //
-// Load ZXING_SCRIPT before this file.
+// Load the zxing script before this file, then call configure() with the
+// versioned asset URLs from cuin_scanner.get_scanner_config / scanner_assets.
 window.upande_cuin_camera = {
-	ZXING_SCRIPT: "/assets/upande_accounting/js/lib/zxing-wasm/zxing_reader.iife.js",
 	ZXING_WASM: "/assets/upande_accounting/js/lib/zxing-wasm/zxing_reader.wasm",
+	PDFJS: "/assets/upande_accounting/js/lib/pdfjs/pdf.min.js",
+	PDFJS_WORKER: "/assets/upande_accounting/js/lib/pdfjs/pdf.worker.min.js",
+	// Pages of a PDF searched for the QR code, and their rendered width in pixels
+	PDF_MAX_PAGES: 5,
+	PDF_RENDER_WIDTH: 2600,
 
 	// Centre crop as a share of the frame's shorter side; also the guide square size
 	CROP: 0.5,
@@ -37,6 +43,13 @@ window.upande_cuin_camera = {
 	},
 
 	_active: null,
+
+	configure(assets) {
+		if (assets.zxing_wasm) this.ZXING_WASM = assets.zxing_wasm;
+		if (assets.pdfjs) this.PDFJS = assets.pdfjs;
+		if (assets.pdfjs_worker) this.PDFJS_WORKER = assets.pdfjs_worker;
+		return this;
+	},
 
 	// Opens the camera in `container` and scans continuously. On each read it
 	// pauses and calls on_text(text); call resume() to scan again.
@@ -225,26 +238,61 @@ window.upande_cuin_camera = {
 						const canvas = document.createElement("canvas");
 						canvas.width = Math.round(bitmap.width * scale);
 						canvas.height = Math.round(bitmap.height * scale);
-						const ctx = canvas.getContext("2d", { willReadFrequently: true });
-						ctx.drawImage(bitmap, 0, 0, canvas.width, canvas.height);
-						const native = decoders.native
-							? decoders.native.detect(canvas).then((r) => r[0] && r[0].rawValue)
-							: Promise.resolve(null);
-						return native.then(
-							(found) =>
-								found ||
-								(decoders.zxing
-									? ZXingWASM.readBarcodes(
-											ctx.getImageData(0, 0, canvas.width, canvas.height),
-											this.ZXING_OPTIONS
-									  ).then((results) => this._first_valid(results))
-									: null)
-						);
+						canvas.getContext("2d", { willReadFrequently: true }).drawImage(bitmap, 0, 0, canvas.width, canvas.height);
+						return this.decode_canvas(canvas);
 					})
 					.catch((err) => {
 						console.error(err);
 						return null;
 					});
+			});
+		});
+	},
+
+	// Reads the QR code from a picture already drawn on a canvas
+	decode_canvas(canvas) {
+		return this._decoders().then((decoders) => {
+			const native = decoders.native
+				? decoders.native
+						.detect(canvas)
+						.then((r) => r[0] && r[0].rawValue)
+						.catch(() => null)
+				: Promise.resolve(null);
+			return native.then((found) => {
+				if (found || !decoders.zxing) return found || null;
+				const ctx = canvas.getContext("2d", { willReadFrequently: true });
+				return ZXingWASM.readBarcodes(ctx.getImageData(0, 0, canvas.width, canvas.height), this.ZXING_OPTIONS).then(
+					(results) => this._first_valid(results)
+				);
+			});
+		});
+	},
+
+	// Renders each page of a PDF (ArrayBuffer) and reads the first QR code found
+	decode_pdf(data) {
+		return import(this.PDFJS).then((pdfjs) => {
+			pdfjs.GlobalWorkerOptions.workerSrc = this.PDFJS_WORKER;
+			return pdfjs.getDocument({ data, isEvalSupported: false }).promise.then((pdf) => {
+				const pages = Math.min(pdf.numPages, this.PDF_MAX_PAGES);
+				const read_page = (number) => {
+					if (number > pages) return null;
+					return pdf.getPage(number).then((page) => {
+						const base = page.getViewport({ scale: 1 });
+						const viewport = page.getViewport({ scale: Math.min(4, this.PDF_RENDER_WIDTH / base.width) });
+						const canvas = document.createElement("canvas");
+						canvas.width = Math.round(viewport.width);
+						canvas.height = Math.round(viewport.height);
+						const ctx = canvas.getContext("2d", { willReadFrequently: true });
+						// White background: QR codes drawn on a transparent page decode better
+						ctx.fillStyle = "#fff";
+						ctx.fillRect(0, 0, canvas.width, canvas.height);
+						return page
+							.render({ canvasContext: ctx, viewport })
+							.promise.then(() => this.decode_canvas(canvas))
+							.then((text) => text || read_page(number + 1));
+					});
+				};
+				return Promise.resolve(read_page(1)).finally(() => pdf.destroy());
 			});
 		});
 	},

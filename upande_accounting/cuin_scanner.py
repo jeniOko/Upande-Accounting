@@ -7,12 +7,17 @@ Two ways in:
   is pushed back to the desk form over realtime for the same user. The result
   is also kept in cache so the desk form can poll for it where realtime is down.
 
+- The desk form reads an image or PDF already attached to the invoice.
+
 TIMS receipts carry the CU invoice number in the QR link itself. eTIMS receipts
 only carry a KRA verification link, so the number is read off that KRA page.
 
 The whole feature can be switched off in Accounts Settings (Invoice and Billing).
 """
 
+import hashlib
+import io
+import os
 import re
 from urllib.parse import parse_qsl, urlparse
 
@@ -37,13 +42,8 @@ SETTING_FIELD = "custom_enable_cu_invoice_scanning"
 
 
 def is_scanning_enabled():
-	# Never saved counts as enabled, matching the field's default. Read the raw
-	# Singles row: get_single_value casts a missing Check to 0.
-	value = frappe.db.sql(
-		"select value from `tabSingles` where doctype = 'Accounts Settings' and field = %s",
-		SETTING_FIELD,
-	)
-	return not value or bool(frappe.utils.cint(value[0][0]))
+	# Off until turned on in Accounts Settings (never saved reads as 0)
+	return bool(frappe.utils.cint(frappe.db.get_single_value("Accounts Settings", SETTING_FIELD)))
 
 
 def _check_enabled():
@@ -51,8 +51,38 @@ def _check_enabled():
 		frappe.throw(_("CU Invoice Number scanning is turned off in Accounts Settings."))
 
 
-def boot_session(bootinfo):
-	bootinfo.upande_cuin_scanning_enabled = int(is_scanning_enabled())
+# Production nginx caches /assets for a year, so every scanner asset URL carries
+# a content hash: a deploy is picked up at once instead of browsers running stale code.
+_SCANNER_ASSETS = {
+	"zxing": "lib/zxing-wasm/zxing_reader.iife.js",
+	"zxing_wasm": "lib/zxing-wasm/zxing_reader.wasm",
+	"camera": "cuin_scan_camera.js",
+	"pdfjs": "lib/pdfjs/pdf.min.js",
+	"pdfjs_worker": "lib/pdfjs/pdf.worker.min.js",
+}
+_asset_versions = {}
+
+
+def _asset_url(path):
+	full_path = frappe.get_app_path("upande_accounting", "public", "js", path)
+	mtime = os.path.getmtime(full_path)
+	cached = _asset_versions.get(full_path)
+	if not cached or cached[0] != mtime:
+		with open(full_path, "rb") as f:
+			cached = (mtime, hashlib.md5(f.read()).hexdigest()[:10])
+		_asset_versions[full_path] = cached
+	return f"/assets/upande_accounting/js/{path}?v={cached[1]}"
+
+
+def scanner_assets():
+	return {key: _asset_url(path) for key, path in _SCANNER_ASSETS.items()}
+
+
+@frappe.whitelist()
+def get_scanner_config():
+	"""Read on every form load, so switching the feature off applies straight away."""
+	enabled = is_scanning_enabled()
+	return {"enabled": enabled, "assets": scanner_assets() if enabled else {}}
 
 
 def _cache_key(session):
@@ -178,3 +208,58 @@ def get_scan_result(session):
 	if result:
 		frappe.cache.delete_value(_result_key(session))
 	return result
+
+
+# Text in a PDF attachment that identifies the CU invoice number
+_URL_RE = re.compile(r"https?://[^\s<>\"')]+", re.IGNORECASE)
+_LABELLED_TIMS_RE = re.compile(r"CU\s*(?:INVOICE|INV)[^0-9]{0,40}(\d{17,20})", re.IGNORECASE)
+_PDF_MAX_PAGES = 5
+
+
+def _pdf_text_and_links(content):
+	from pypdf import PdfReader
+
+	reader = PdfReader(io.BytesIO(content))
+	texts, links = [], []
+	for page in reader.pages[:_PDF_MAX_PAGES]:
+		texts.append(page.extract_text() or "")
+		for annot in page.get("/Annots") or []:
+			action = (annot.get_object() or {}).get("/A") or {}
+			uri = action.get("/URI")
+			if uri:
+				links.append(str(uri))
+	return "\n".join(texts), links
+
+
+@frappe.whitelist()
+def read_attachment_cuin(doctype, docname, file_url):
+	"""Find the CU invoice number in the text and links of a PDF attached to the
+	document. QR codes in images, and drawn into PDFs, are decoded in the browser."""
+	_check_enabled()
+	frappe.has_permission(doctype, "read", docname, throw=True)
+	file_name = frappe.db.get_value(
+		"File", {"file_url": file_url, "attached_to_doctype": doctype, "attached_to_name": docname}
+	)
+	if not file_name:
+		frappe.throw(_("That file isn't attached to {0}.").format(docname), frappe.PermissionError)
+
+	if not file_url.lower().endswith(".pdf"):
+		return None
+
+	try:
+		text, links = _pdf_text_and_links(frappe.get_doc("File", file_name).get_content())
+	except Exception:
+		frappe.log_error(title="CU invoice number: could not read PDF", message=frappe.get_traceback())
+		return None
+
+	# Links first (hyperlinked QR targets), then links and numbers printed as text
+	for url in links + _URL_RE.findall(text):
+		if is_etims_link(url) or (urlparse(url).hostname or "").lower().endswith("kra.go.ke"):
+			result = parse_scan(url)
+			if result["valid"]:
+				return result
+
+	match = _ETIMS_RE.search(text) or _LABELLED_TIMS_RE.search(text)
+	if match:
+		return parse_scan(match.group(1))
+	return None

@@ -12,7 +12,9 @@
 	.cuin-scan #cuin-reader { margin-top: 12px; }
 	.cuin-scan .cuin-status { min-height: 1.5em; margin: 12px 0; }
 	.cuin-scan .cuin-actions { display: flex; gap: 8px; margin-top: 12px; }
-	.cuin-scan .cuin-actions .btn { flex: 1; }
+	.cuin-scan .cuin-actions .btn { flex: 1; margin: 0; }
+	/* Visually hidden but still reachable by its <label>, unlike display: none on some phones */
+	.cuin-scan .cuin-file { position: absolute; width: 1px; height: 1px; opacity: 0; overflow: hidden; }
 	.cuin-scan .cuin-manual { display: flex; gap: 8px; }
 	.cuin-scan .cuin-manual input { flex: 1; }
 </style>
@@ -29,10 +31,11 @@
 
 	<div id="cuin-reader"></div>
 	<div class="cuin-actions">
-		<button class="btn btn-default" id="cuin-photo">{{ _("Take Photo") }}</button>
+		{# A label opens the camera app natively, even if a script fails to load #}
+		<label class="btn btn-default" for="cuin-photo-input">{{ _("Take Photo") }}</label>
 		<button class="btn btn-primary" id="cuin-again" style="display:none">{{ _("Scan Again") }}</button>
 	</div>
-	<input type="file" accept="image/*" capture="environment" id="cuin-photo-input" style="display:none">
+	<input type="file" accept="image/*" capture="environment" id="cuin-photo-input" class="cuin-file">
 	<div class="cuin-status" id="cuin-status"></div>
 
 	<hr>
@@ -47,8 +50,8 @@
 
 {% block script %}
 {% if enabled and session %}
-<script src="/assets/upande_accounting/js/lib/zxing-wasm/zxing_reader.iife.js"></script>
-<script src="/assets/upande_accounting/js/cuin_scan_camera.js"></script>
+<script src="{{ assets.zxing }}"></script>
+<script src="{{ assets.camera }}"></script>
 <script>
 	frappe.ready(function () {
 		const session = {{ session | tojson }};
@@ -102,25 +105,23 @@
 			});
 		}
 
-		upande_cuin_camera
-			.open(document.getElementById("cuin-reader"), {
-				on_text: (text) => send(text),
-				on_error: () =>
-					set_status(__("Could not open the camera. Allow camera access for this site (it must be opened over https), or use Take Photo."), "danger"),
-			})
-			.then((s) => (scanner = s));
-
+		// Wire up every control before touching the camera, so a camera problem
+		// can never leave the buttons dead
 		$again.on("click", () => {
 			$status.empty();
 			resume();
 		});
 
-		$("#cuin-photo").on("click", () => $("#cuin-photo-input").val("").trigger("click"));
 		$("#cuin-photo-input").on("change", function () {
 			const file = this.files && this.files[0];
+			this.value = "";
 			if (!file) return;
 			clearTimeout(retry);
 			scanner && scanner.pause();
+			if (!window.upande_cuin_camera) {
+				set_status(__("The scanner didn't load. Refresh this page and try again."), "danger");
+				return;
+			}
 			set_status(__("Reading photo..."), "info");
 			upande_cuin_camera.decode_file(file).then((text) => {
 				if (text) {
@@ -140,6 +141,25 @@
 			busy = false;
 			send(value, true);
 		});
+
+		if (!window.upande_cuin_camera || !window.ZXingWASM) {
+			set_status(__("The scanner didn't load. Refresh this page and try again, or type the number below."), "danger");
+			return;
+		}
+
+		try {
+			upande_cuin_camera
+				.configure({{ assets | tojson }})
+				.open(document.getElementById("cuin-reader"), {
+					on_text: (text) => send(text),
+					on_error: () =>
+						set_status(__("Could not open the camera. Allow camera access for this site (it must be opened over https), or use Take Photo."), "danger"),
+				})
+				.then((s) => (scanner = s));
+		} catch (err) {
+			console.error(err);
+			set_status(__("Could not start the camera. Use Take Photo or type the number below."), "danger");
+		}
 	});
 </script>
 {% endif %}

@@ -1,0 +1,1 @@
+pdfjs-dist 4.10.38 (https://github.com/mozilla/pdf.js), legacy/build/pdf.min.mjs and pdf.worker.min.mjs, vendored unmodified but renamed .mjs -> .js so any web server serves them as JavaScript.

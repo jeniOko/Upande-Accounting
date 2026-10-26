@@ -2,15 +2,15 @@
  "custom_fields": [
   {
    "creation": "2026-10-23 00:00:00",
-   "default": "1",
-   "description": "Show the Scan CU Receipt button on Purchase Invoices and read KRA receipt QR codes scanned with a phone, webcam or handheld scanner into the Control Unit Invoice Number.",
+   "default": "0",
+   "description": "Adds a Scan CU Receipt button to draft Purchase Invoices that fills the Control Unit Invoice Number from the QR code on a KRA ETR / eTIMS receipt.<br><br><b>Ways to scan</b><br>&bull; <b>Phone</b>: scan the code shown on screen, then the receipt; best for small (2 cm) or faint codes, with Take Photo for the hardest ones.<br>&bull; <b>Computer camera</b>: hold the receipt up to the webcam, or upload a photo.<br>&bull; <b>Attachment</b>: reads an attached PDF, JPG, PNG, WebP, GIF or BMP (HEIC only in Safari).<br>&bull; <b>Handheld scanner</b>: click the field and scan; the KRA link is turned into the number.<br><br><b>Needs</b>: the site opened over https for cameras, and internet access on the server for eTIMS receipts (the number is looked up on KRA's site).",
    "docstatus": 0,
    "dt": "Accounts Settings",
    "fieldname": "custom_enable_cu_invoice_scanning",
    "fieldtype": "Check",
    "insert_after": "confirm_before_resetting_posting_date",
    "label": "Enable CU Invoice Number Scanning",
-   "modified": "2026-10-23 00:00:00",
+   "modified": "2026-10-26 00:00:00",
    "modified_by": "Administrator",
    "module": "Upande Accounting Customizations",
    "name": "Accounts Settings-custom_enable_cu_invoice_scanning",
@@ -20,6 +20,22 @@
  "custom_perms": [],
  "doctype": "Accounts Settings",
  "links": [],
- "property_setters": [],
+ "property_setters": [
+  {
+   "creation": "2026-10-26 00:00:00",
+   "doc_type": "Accounts Settings",
+   "docstatus": 0,
+   "doctype_or_field": "DocField",
+   "field_name": "custom_enable_cu_invoice_scanning",
+   "modified": "2026-10-26 00:00:00",
+   "modified_by": "Administrator",
+   "module": "Upande Accounting Customizations",
+   "name": "Accounts Settings-custom_enable_cu_invoice_scanning-show_description_on_click",
+   "owner": "Administrator",
+   "property": "show_description_on_click",
+   "property_type": "Check",
+   "value": "1"
+  }
+ ],
  "sync_on_migrate": 1
 }

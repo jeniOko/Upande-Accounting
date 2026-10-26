@@ -91,15 +91,16 @@ def is_grouped(filters):
     return bool(GROUP_BY_FIELDS.get(filters.get("group_by")))
 
 
-def group_rows(data, columns, filters, label_field="party"):
+def group_rows(data, columns, filters, label_field="party", group_by_fields=GROUP_BY_FIELDS):
     """
-    Return `data` re-ordered by the Group By filter's field, each group as:
+    Return `data` re-ordered by the Group By filter's field (looked up in
+    group_by_fields, so other reports can bring their own), each group as:
     header row, its rows (original order kept), one sub-total row per
     currency, blank spacer. Rows already marked bold (base-report sub-totals)
     are dropped so nothing is counted twice. A Grand Total row is added only
     when every row shares one currency.
     """
-    fieldname = GROUP_BY_FIELDS.get(filters.get("group_by"))
+    fieldname = group_by_fields.get(filters.get("group_by"))
     if not fieldname or not data:
         return data
 
@@ -115,7 +116,9 @@ def group_rows(data, columns, filters, label_field="party"):
         groups.setdefault(key, []).append(row)
         if fieldname == "party":
             # Party groups are shown and ordered by name, not ID
-            labels[key] = row.get("customer_name") or row.get("supplier_name") or key
+            labels[key] = (
+                row.get("customer_name") or row.get("supplier_name") or row.get("party_name") or key
+            )
 
     out = []
     grand_totals = OrderedDict()

@@ -1,6 +1,15 @@
 // Copyright (c) 2026, jeniffer@upande.com and contributors
 // For license information, please see license.txt
 
+// A MultiSelectList with a fixed set of choices
+function fixed_choices(choices) {
+    return function (txt) {
+        txt = (txt || "").toLowerCase();
+        return choices
+            .filter((c) => c.toLowerCase().includes(txt))
+            .map((c) => ({ value: c, description: "" }));
+    };
+}
 
 frappe.query_reports["Advance Payment Register"] = {
 
@@ -17,7 +26,9 @@ frappe.query_reports["Advance Payment Register"] = {
             fieldname: "from_date",
             label: __("From Date"),
             fieldtype: "Date",
-            default: frappe.datetime.add_months(frappe.datetime.get_today(), -1),
+            // A year back: an advance stays open until it is invoiced, often
+            // well beyond the month it was paid in.
+            default: frappe.datetime.add_months(frappe.datetime.get_today(), -12),
             reqd: 1,
         },
         {
@@ -30,37 +41,78 @@ frappe.query_reports["Advance Payment Register"] = {
         {
             fieldname: "party_type",
             label: __("Party Type"),
-            fieldtype: "Select",
-            options: "\nCustomer\nSupplier",
+            fieldtype: "Link",
+            options: "Party Type",
             on_change: function () {
-                const partyType = frappe.query_report.get_filter_value("party_type");
-                frappe.query_report.set_filter_value("party", "");
-                frappe.query_report.get_filter("party").df.options = partyType || "Customer";
-                frappe.query_report.get_filter("party").refresh();
+                frappe.query_report.set_filter_value("party", []);
             },
         },
         {
             fieldname: "party",
             label: __("Party"),
-            fieldtype: "Link",
-            options: "Customer",
-            get_query: function () {
-                const partyType =
-                    frappe.query_report.get_filter_value("party_type") || "Customer";
-                return { doctype: partyType };
+            fieldtype: "MultiSelectList",
+            get_data: function (txt) {
+                const party_type = frappe.query_report.get_filter_value("party_type");
+                if (party_type) {
+                    return frappe.db.get_link_options(party_type, txt);
+                }
+                return Promise.all([
+                    frappe.db.get_link_options("Customer", txt),
+                    frappe.db.get_link_options("Supplier", txt),
+                ]).then((lists) => lists.flat());
             },
         },
         {
-            fieldname: "payment_status",
-            label: __("Payment Status"),
+            fieldname: "group_by",
+            label: __("Group By"),
             fieldtype: "Select",
-            options: "\nFully Allocated\nPartially Allocated\nUnallocated",
+            options: [
+                "",
+                "Group by Currency",
+                "Group by Party Type",
+                "Group by Party",
+                "Group by Goods / Services / Assets",
+                "Group by Delivery Status",
+                "Group by Allocation Status",
+                "Group by Advance Linked To",
+            ].join("\n"),
         },
         {
-            fieldname: "advance_type",
-            label: __("Advance Type"),
-            fieldtype: "Select",
-            options: "\nOrder-Based Advance\nUnallocated Advance\nPartially Used Advance",
+            fieldname: "allocation_status",
+            label: __("Allocated To Invoices"),
+            fieldtype: "MultiSelectList",
+            default: ["Unallocated", "Partially Allocated"],
+            description: __(
+                "How much of the advance has been set off against invoices. An advance linked to an order but not yet invoiced counts as Unallocated."
+            ),
+            get_data: fixed_choices(["Unallocated", "Partially Allocated", "Fully Allocated"]),
+        },
+        {
+            fieldname: "linked_to",
+            label: __("Advance Linked To"),
+            fieldtype: "MultiSelectList",
+            description: __("Which document the advance was paid against."),
+            get_data: fixed_choices(["Sales / Purchase Order", "Invoice Only", "Nothing Yet"]),
+        },
+        {
+            fieldname: "advance_for",
+            label: __("Goods / Services / Assets"),
+            fieldtype: "MultiSelectList",
+            description: __(
+                "From the items on the linked orders and invoices. Shows any advance that includes a chosen kind, so Assets also shows an advance for goods and assets together. Not Specified means nothing is linked yet."
+            ),
+            get_data: fixed_choices(["Goods", "Services", "Assets", "Not Specified"]),
+        },
+        {
+            fieldname: "delivery_status",
+            label: __("Delivery Status"),
+            fieldtype: "MultiSelectList",
+            description: __(
+                "From the linked orders: goods by delivered / received qty, services by billed amount."
+            ),
+            get_data: fixed_choices([
+                "Not Delivered", "Partly Delivered", "Fully Delivered", "Invoiced", "Not Linked",
+            ]),
         },
     ],
 
@@ -72,32 +124,47 @@ frappe.query_reports["Advance Payment Register"] = {
 
         if (!data) return value;
 
-        if (column.fieldname === "payment_status") {
-            const colours = {
+        // Group header and sub-total rows
+        if (data.bold) {
+            return `<strong>${value}</strong>`;
+        }
+
+        const colours = {
+            allocation_status: {
                 "Fully Allocated":     "green",
                 "Partially Allocated": "orange",
                 "Unallocated":         "red",
-            };
-            const colour = colours[data.payment_status];
-            if (colour) {
-                value = `<span style="color:${colour}; font-weight:600;">${data.payment_status}</span>`;
-            }
+            },
+            delivery_status: {
+                "Fully Delivered":  "green",
+                "Invoiced":         "green",
+                "Partly Delivered": "orange",
+                "Not Delivered":    "red",
+                "Not Linked":       "grey",
+            },
+            advance_for: {
+                "Goods":            "#1a6ebd",
+                "Services":         "#7c3aed",
+                "Assets":           "#b45309",
+                "Not Specified":    "grey",
+            },
+            linked_to: {
+                "Sales / Purchase Order": "#1a6ebd",
+                "Invoice Only":           "#0f766e",
+                "Nothing Yet":            "#c0392b",
+            },
+        };
+        let colour = colours[column.fieldname] && colours[column.fieldname][data[column.fieldname]];
+        // Mixed kinds, e.g. "Goods & Assets"
+        if (!colour && column.fieldname === "advance_for" && data.advance_for) {
+            colour = "#0f766e";
+        }
+        if (colour) {
+            value = `<span style="color:${colour}; font-weight:600;">${value}</span>`;
         }
 
-        if (column.fieldname === "advance_type") {
-            const colours = {
-                "Order-Based Advance":    "#1a6ebd",
-                "Unallocated Advance":    "#c0392b",
-                "Partially Used Advance": "#e67e22",
-            };
-            const colour = colours[data.advance_type];
-            if (colour) {
-                value = `<span style="color:${colour}; font-weight:600;">${data.advance_type}</span>`;
-            }
-        }
-
-        if (column.fieldname === "unallocated_amount" && flt(data.unallocated_amount) > 0) {
-            value = `<span style="color:darkorange;">${value}</span>`;
+        if (column.fieldname === "open_balance" && flt(data.open_balance) > 0) {
+            value = `<span style="color:darkorange; font-weight:600;">${value}</span>`;
         }
 
         return value;

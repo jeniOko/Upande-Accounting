@@ -109,6 +109,7 @@ doc_events = {
 
 # include js in doctype views
 doctype_js = {
+    "Bank Clearance": "public/js/bank_clearance.js",
     "Cost Center": "public/js/cost_center.js",
     "Item": "public/js/item.js",
     "Journal Entry": "public/js/journal_entry.js",
@@ -243,6 +244,7 @@ doctype_js = {
 #
 # Specify custom mixins to extend the standard doctype controller.
 extend_doctype_class = {
+    "Bank Clearance": "upande_accounting.bank_clearance.BankClearanceMixin",
     "Report": "upande_accounting.budget_variance.ReportMixin",
 }
 # extend_doctype_class = {
